@@ -19,7 +19,7 @@ const (
 	imageNomad = "noenv/nomad:0.10.2"
 )
 
-type testenv struct {
+type dktestenv struct {
 	docker  *dockerapi.Client
 	netName string
 	netCidr string
@@ -31,7 +31,7 @@ func init() {
 	rand.Seed(int64(time.Now().Nanosecond()))
 }
 
-func testSetupDocker(t *testing.T, timeout time.Duration) (testenv, func()) {
+func testSetupDocker(t *testing.T, timeout time.Duration) (dktestenv, func()) {
 	// TODO clean up containers on network if it exists
 	t.Helper()
 	cli, err := dockerapi.NewClientWithOpts(dockerapi.FromEnv, dockerapi.WithVersion("1.40"))
@@ -45,7 +45,7 @@ func testSetupDocker(t *testing.T, timeout time.Duration) (testenv, func()) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return testenv{
+	return dktestenv{
 			docker:  cli,
 			netName: t.Name(),
 			netCidr: cidr,
@@ -110,12 +110,12 @@ func TestConsulDocker(t *testing.T) {
 	}
 }
 
-func (te testenv) NetworkConfig() NetworkConfig {
+func (te dktestenv) NetworkConfig() NetworkConfig {
 	_, n, _ := net.ParseCIDR(te.netCidr)
 	return NetworkConfig{Network: *n, DockerNetName: te.netName}
 }
 
-func threeNodeConsulDocker(t *testing.T, te testenv) (*ConsulClusterRunner, *ConsulDockerRunner) {
+func threeNodeConsulDocker(t *testing.T, te dktestenv) (*ConsulClusterRunner, *ConsulDockerRunner) {
 	t.Helper()
 	nodeNames := []string{"consul-srv-1", "consul-srv-2", "consul-srv-3"}
 	var ips []string

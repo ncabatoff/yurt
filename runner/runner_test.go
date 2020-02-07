@@ -45,13 +45,21 @@ func getConsulNomadBinaries(t *testing.T) (string, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	consulAbs, err := filepath.Abs(consulPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	nomadPath, err := packages.GetBinary("nomad", runtime.GOOS, runtime.GOARCH, "download")
 	if err != nil {
 		t.Fatal(err)
 	}
+	nomadAbs, err := filepath.Abs(nomadPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	return consulPath, nomadPath
+	return consulAbs, nomadAbs
 }
 
 func nomadRunnersHealthy(ctx context.Context, runners []NomadRunner, expectedPeers []string) error {

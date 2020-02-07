@@ -2,7 +2,11 @@ package runner
 
 import (
 	"fmt"
+	"github.com/hashicorp/vault/sdk/helper/jsonutil"
+	"log"
+
 	nomadapi "github.com/hashicorp/nomad/api"
+	"github.com/ncabatoff/yurt/pki"
 )
 
 type NomadCommand interface {
@@ -29,6 +33,13 @@ type NomadPorts struct {
 	RPC  int
 }
 
+func (n NomadPorts) Add(inc int) NomadPorts {
+	addPort(&n.HTTP, inc)
+	addPort(&n.Serf, inc)
+	addPort(&n.RPC, inc)
+	return n
+}
+
 type NomadConfig struct {
 	NodeName      string
 	NetworkConfig NetworkConfig
@@ -37,6 +48,7 @@ type NomadConfig struct {
 	DataDir       string
 	ConfigDir     string
 	ConsulAddr    string
+	TLS           pki.TLSConfigPEM
 }
 
 func (nc NomadConfig) WithDirs(config, data, log string) NomadCommand {
@@ -79,6 +91,40 @@ func (nc NomadConfig) Command() []string {
 }
 
 func (nc NomadConfig) Files() map[string]string {
+	tlsCfg := map[string]interface{}{
+		"http":                   true,
+		"rpc":                    true,
+		"verify_server_hostname": true,
+	}
+	allcfg := map[string]interface{}{
+		"tls": tlsCfg,
+		"consul": map[string]interface{}{
+			"ssl":     true,
+			"ca_file": "ca.pem",
+		},
+	}
+
+	files := map[string]string{}
+	if nc.TLS.Cert != "" {
+		files["nomad.pem"] = nc.TLS.Cert
+		tlsCfg["cert_file"] = "nomad.pem"
+	}
+	if nc.TLS.PrivateKey != "" {
+		files["nomad-key.pem"] = nc.TLS.PrivateKey
+		tlsCfg["key_file"] = "nomad-key.pem"
+	}
+	if nc.TLS.CA != "" {
+		files["ca.pem"] = nc.TLS.CA
+		tlsCfg["ca_file"] = "ca.pem"
+	}
+	if len(files) > 0 {
+		tlsCfgBytes, err := jsonutil.EncodeJSON(allcfg)
+		if err != nil {
+			log.Fatal(err)
+		}
+		files["tls.json"] = string(tlsCfgBytes)
+	}
+
 	portHTTP, portSerf, portRPC := 4646, 4647, 4648
 	if nc.Ports.HTTP != 0 {
 		portHTTP = nc.Ports.HTTP
@@ -93,7 +139,7 @@ func (nc NomadConfig) Files() map[string]string {
 	if nc.NetworkConfig.Network.IP != nil {
 		network = nc.NetworkConfig.Network.IP.String()
 	}
-	return map[string]string{"common.hcl": fmt.Sprintf(`
+	files["common.hcl"] = fmt.Sprintf(`
 advertise {
   http = <<EOF
 {{- GetAllInterfaces | include "network" "%s" | attr "address" -}}
@@ -110,7 +156,8 @@ ports {
   serf = %d
   rpc = %d
 }
-`, network, network, network, portHTTP, portSerf, portRPC)}
+`, network, network, network, portHTTP, portSerf, portRPC)
+	return files
 }
 
 func (nc NomadConfig) Config() NomadConfig {
@@ -125,4 +172,8 @@ func (nc NomadServerConfig) Command() []string {
 func (nc NomadServerConfig) WithDirs(config, data, log string) NomadCommand {
 	nc.ConfigDir, nc.DataDir, nc.LogConfig.LogDir = config, data, log
 	return nc
+}
+
+func (nc NomadServerConfig) Files() map[string]string {
+	return nc.NomadConfig.Files()
 }

@@ -18,8 +18,13 @@ var registry = map[string]Upstream{
 	},
 	"consul": {
 		name:      "consul",
-		version:   "1.5.3",
+		version:   "1.7.0-beta4",
 		urlFormat: "https://releases.hashicorp.com/consul/%s/consul_%s_%s_%s.zip",
+	},
+	"vault": {
+		name:      "vault",
+		version:   "1.3.2",
+		urlFormat: "https://releases.hashicorp.com/vault/%s/vault_%s_%s_%s.zip",
 	},
 }
 
@@ -102,7 +107,7 @@ func GetBinary(packageName, osName, arch, dldirBase string) (string, error) {
 	}
 
 	if err = os.Chmod(fullbin, 0755); err != nil {
-		return "", fmt.Errorf("chmdo binary failed: %w", err)
+		return "", fmt.Errorf("chmod binary failed: %w", err)
 	}
 
 	return fullbin, nil

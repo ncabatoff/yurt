@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"github.com/ncabatoff/yurt/pki"
 	"golang.org/x/sync/errgroup"
 	"path/filepath"
 )
@@ -20,6 +21,7 @@ type ConsulClusterConfigSingleIP struct {
 	ServerNames   []string
 	FirstPorts    ConsulPorts
 	PortIncrement int
+	TLS           []pki.TLSConfigPEM
 }
 
 var _ ConsulClusterConfig = ConsulClusterConfigSingleIP{}
@@ -31,20 +33,13 @@ func (c ConsulClusterConfigSingleIP) ServerCommands() []ConsulCommand {
 			ConsulConfig{
 				NodeName:  name, // "consul-srv-%d", i+1
 				JoinAddrs: c.JoinAddrs(),
+				ConfigDir: filepath.Join(c.WorkDir, name, "consul", "config"),
 				DataDir:   filepath.Join(c.WorkDir, name, "consul", "data"),
-				Ports: ConsulPorts{
-					HTTP:    c.FirstPorts.HTTP + i*c.PortIncrement,
-					HTTPS:   0,
-					DNS:     c.FirstPorts.DNS + i*c.PortIncrement,
-					SerfLAN: c.FirstPorts.SerfLAN + i*c.PortIncrement,
-					SerfWAN: c.FirstPorts.SerfWAN + i*c.PortIncrement,
-					Server:  c.FirstPorts.Server + i*c.PortIncrement,
-				},
+				Ports:     c.FirstPorts.Add(i * c.PortIncrement),
 			},
 		}
-		if c.FirstPorts.HTTPS != 0 {
-			// TODO TLS
-			command.Ports.HTTP = c.FirstPorts.HTTPS + i*c.PortIncrement
+		if len(c.TLS) > i {
+			command.TLS = c.TLS[i]
 		}
 		commands = append(commands, command)
 	}
@@ -68,6 +63,9 @@ func (c ConsulClusterConfigSingleIP) APIAddrs() []string {
 	var addrs []string
 	for i := range c.ServerNames {
 		port := c.FirstPorts.HTTP + c.PortIncrement*i
+		if len(c.TLS) > 0 {
+			port = c.FirstPorts.HTTPS + c.PortIncrement*i
+		}
 		addrs = append(addrs, fmt.Sprintf("127.0.0.1:%d", port))
 	}
 	return addrs
@@ -184,6 +182,7 @@ type NomadClusterConfigSingleIP struct {
 	FirstPorts    NomadPorts
 	PortIncrement int
 	ConsulAddrs   []string
+	TLS           []pki.TLSConfigPEM
 }
 
 func (n NomadClusterConfigSingleIP) ServerCommands() []NomadCommand {
@@ -192,16 +191,15 @@ func (n NomadClusterConfigSingleIP) ServerCommands() []NomadCommand {
 		command := NomadServerConfig{
 			BootstrapExpect: len(n.ServerNames),
 			NomadConfig: NomadConfig{
-				NodeName:  name, // "nomad-srv-%d", i+1
-				DataDir:   filepath.Join(n.WorkDir, name, "nomad", "data"),
-				ConfigDir: filepath.Join(n.WorkDir, name, "nomad", "config"),
-				Ports: NomadPorts{
-					HTTP: n.FirstPorts.HTTP + i*n.PortIncrement,
-					Serf: n.FirstPorts.Serf + i*n.PortIncrement,
-					RPC:  n.FirstPorts.RPC + i*n.PortIncrement,
-				},
+				NodeName:   name, // "nomad-srv-%d", i+1
+				DataDir:    filepath.Join(n.WorkDir, name, "nomad", "data"),
+				ConfigDir:  filepath.Join(n.WorkDir, name, "nomad", "config"),
+				Ports:      n.FirstPorts.Add(i * n.PortIncrement),
 				ConsulAddr: n.ConsulAddrs[i],
 			},
+		}
+		if len(n.TLS) > i {
+			command.TLS = n.TLS[i]
 		}
 		commands = append(commands, command)
 	}

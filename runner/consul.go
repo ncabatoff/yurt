@@ -3,6 +3,9 @@ package runner
 import (
 	"fmt"
 	"github.com/hashicorp/consul/api"
+	"github.com/hashicorp/vault/sdk/helper/jsonutil"
+	"github.com/ncabatoff/yurt/pki"
+	"log"
 )
 
 // ConsulRunner is used to create a Consul node and talk to it.
@@ -34,6 +37,22 @@ type ConsulPorts struct {
 	Server  int
 }
 
+func addPort(p *int, inc int) {
+	if *p > 0 {
+		*p += inc
+	}
+}
+
+func (c ConsulPorts) Add(inc int) ConsulPorts {
+	addPort(&c.HTTP, inc)
+	addPort(&c.HTTPS, inc)
+	addPort(&c.DNS, inc)
+	addPort(&c.SerfLAN, inc)
+	addPort(&c.SerfWAN, inc)
+	addPort(&c.Server, inc)
+	return c
+}
+
 // ConsulConfig describes how to run a single Consul agent.
 type ConsulConfig struct {
 	NetworkConfig NetworkConfig
@@ -51,6 +70,8 @@ type ConsulConfig struct {
 	// Non-default port listener settings can be provided, and must be if
 	// there's no networking config (meaning everyone listens on localhost.)
 	Ports ConsulPorts
+
+	TLS pki.TLSConfigPEM
 }
 
 // ConsulServerConfig is a superset of ConsulConfig, containing configuration only
@@ -95,7 +116,7 @@ func (cc ConsulConfig) Command() []string {
 		args = append(args, fmt.Sprintf("-http-port=%d", cc.Ports.HTTP))
 	}
 	if cc.Ports.HTTPS != 0 {
-		// TODO TLS this is not an actual argument
+		// requires https://github.com/hashicorp/consul/pull/7086
 		args = append(args, fmt.Sprintf("-https-port=%d", cc.Ports.HTTPS))
 	}
 	if cc.Ports.SerfLAN != 0 {
@@ -115,7 +136,39 @@ func (cc ConsulConfig) Command() []string {
 }
 
 func (cc ConsulConfig) Files() map[string]string {
-	return nil
+	tlsCfg := map[string]interface{}{
+		"verify_incoming_rpc":    true,
+		"verify_outgoing":        true,
+		"verify_server_hostname": true,
+		"ports": map[string]interface{}{
+			"https": 8501,
+		},
+	}
+
+	files := map[string]string{}
+	if cc.TLS.Cert != "" {
+		files["consul.pem"] = cc.TLS.Cert
+		tlsCfg["cert_file"] = "consul.pem"
+	}
+	if cc.TLS.PrivateKey != "" {
+		files["consul-key.pem"] = cc.TLS.PrivateKey
+		tlsCfg["key_file"] = "consul-key.pem"
+	}
+	if cc.TLS.CA != "" {
+		files["ca.pem"] = cc.TLS.CA
+		tlsCfg["ca_file"] = "ca.pem"
+	}
+	if len(files) == 0 {
+		return nil
+	}
+
+	tlsCfgBytes, err := jsonutil.EncodeJSON(tlsCfg)
+	if err != nil {
+		log.Fatal(err)
+	}
+	files["tls.json"] = string(tlsCfgBytes)
+
+	return files
 }
 
 func (cc ConsulConfig) Config() ConsulConfig {
@@ -128,5 +181,5 @@ func (cc ConsulServerConfig) Command() []string {
 }
 
 func (cc ConsulServerConfig) Files() map[string]string {
-	return nil
+	return cc.ConsulConfig.Files()
 }

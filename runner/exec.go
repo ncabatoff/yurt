@@ -3,14 +3,17 @@ package runner
 import (
 	"context"
 	"fmt"
-	"github.com/hashicorp/consul/api"
-	api2 "github.com/hashicorp/nomad/api"
+	consulapi "github.com/hashicorp/consul/api"
+	nomadapi "github.com/hashicorp/nomad/api"
+	"github.com/hashicorp/vault/sdk/helper/certutil"
+	"github.com/ncabatoff/yurt/util"
 	"io/ioutil"
 	"log"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 type ConsulExecRunner struct {
@@ -39,10 +42,26 @@ func (cer *ConsulExecRunner) Start(ctx context.Context) (net.IP, error) {
 	args := cer.Command()
 	log.Print(cer.BinPath, args)
 
+	for _, dir := range []string{cer.Config().ConfigDir, cer.Config().DataDir} {
+		if dir == "" {
+			continue
+		}
+		err := os.MkdirAll(dir, 0755)
+		if err != nil {
+			return nil, err
+		}
+	}
+	for name, contents := range cer.Files() {
+		if err := writeConfig(cer.Config().ConfigDir, name, contents); err != nil {
+			return nil, err
+		}
+	}
+
 	ctx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(ctx, cer.BinPath, args...)
-	cmd.Stdout = NewOutputWriter(cer.Config().NodeName, os.Stdout)
-	cmd.Stderr = NewOutputWriter(cer.Config().NodeName, os.Stderr)
+	cmd.Dir = cer.Config().ConfigDir
+	cmd.Stdout = util.NewOutputWriter(cer.Config().NodeName, os.Stdout)
+	cmd.Stderr = util.NewOutputWriter(cer.Config().NodeName, os.Stderr)
 
 	if err := cmd.Start(); err != nil {
 		return nil, err
@@ -53,17 +72,22 @@ func (cer *ConsulExecRunner) Start(ctx context.Context) (net.IP, error) {
 	return localhost, nil
 }
 
-func (cer *ConsulExecRunner) ConsulAPI() (*api.Client, error) {
-	apiConfig := api.DefaultNonPooledConfig()
-	apiConfig.Scheme = "http"
+func (cer *ConsulExecRunner) ConsulAPI() (*consulapi.Client, error) {
+	apiConfig := consulapi.DefaultNonPooledConfig()
 
-	if cer.Config().Ports.HTTP != 0 {
-		// TODO there's no reason we have to limit exec runners to using localhost.  Use network
-		// instead.  Or better still the command/config.
+	// TODO there's no reason we have to limit exec runners to using localhost.
+	// Use network instead.  Or better still the command/config.
+
+	switch {
+	case cer.Config().Ports.HTTP > 0:
 		apiConfig.Address = fmt.Sprintf("%s:%d", "127.0.0.1", cer.Config().Ports.HTTP)
+	case cer.Config().Ports.HTTPS > 0:
+		apiConfig.Address = fmt.Sprintf("%s:%d", "127.0.0.1", cer.Config().Ports.HTTPS)
+		apiConfig.Scheme = "https"
+		apiConfig.TLSConfig.CAFile = filepath.Join(cer.Config().ConfigDir, "ca.pem")
 	}
 
-	return api.NewClient(apiConfig)
+	return consulapi.NewClient(apiConfig)
 }
 
 func (cer *ConsulExecRunner) Wait() error {
@@ -106,7 +130,19 @@ func writeConfig(dir, name, contents string) error {
 		return err
 	}
 	path := filepath.Join(dir, name)
-	log.Print(path, contents)
+	if strings.HasSuffix(name, ".pem") {
+		bundle, err := certutil.ParsePEMBundle(string(contents))
+		if err != nil {
+			return err
+		}
+		cert := bundle.Certificate
+		if cert != nil {
+			log.Printf("%s: Issuer=%s Subject=%s DNS=%v IP=%v\n", path,
+				cert.Issuer, cert.Subject, cert.DNSNames, cert.IPAddresses)
+		}
+	} else {
+		log.Print(path, contents)
+	}
 	return ioutil.WriteFile(path, []byte(contents), 0600)
 }
 
@@ -118,6 +154,15 @@ func (ner *NomadExecRunner) Start(ctx context.Context) (net.IP, error) {
 	args := ner.Command()
 	log.Print(ner.BinPath, args)
 
+	for _, dir := range []string{ner.Config().ConfigDir, ner.Config().DataDir} {
+		if dir == "" {
+			continue
+		}
+		err := os.MkdirAll(dir, 0755)
+		if err != nil {
+			return nil, err
+		}
+	}
 	files := ner.Files()
 	for name, contents := range files {
 		if err := writeConfig(ner.Config().ConfigDir, name, contents); err != nil {
@@ -127,8 +172,9 @@ func (ner *NomadExecRunner) Start(ctx context.Context) (net.IP, error) {
 
 	ctx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(ctx, ner.BinPath, args...)
-	cmd.Stdout = NewOutputWriter(ner.Config().NodeName, os.Stdout)
-	cmd.Stderr = NewOutputWriter(ner.Config().NodeName, os.Stderr)
+	cmd.Dir = ner.Config().ConfigDir
+	cmd.Stdout = util.NewOutputWriter(ner.Config().NodeName, os.Stdout)
+	cmd.Stderr = util.NewOutputWriter(ner.Config().NodeName, os.Stderr)
 
 	if err := cmd.Start(); err != nil {
 		return nil, err
@@ -139,14 +185,22 @@ func (ner *NomadExecRunner) Start(ctx context.Context) (net.IP, error) {
 	return localhost, nil
 }
 
-func (ner *NomadExecRunner) NomadAPI() (*api2.Client, error) {
-	apiConfig := api2.DefaultConfig()
+func (ner *NomadExecRunner) NomadAPI() (*nomadapi.Client, error) {
+	apiConfig := nomadapi.DefaultConfig()
 
-	if ner.Config().Ports.HTTP != 0 {
-		apiConfig.Address = fmt.Sprintf("http://%s:%d", "127.0.0.1", ner.Config().Ports.HTTP)
+	scheme, port := "http", 4646
+	port = ner.Config().Ports.HTTP
+	if port <= 0 {
+		port = 4646
 	}
 
-	return api2.NewClient(apiConfig)
+	if ca := ner.Config().TLS.CA; len(ca) > 0 {
+		scheme = "https"
+		apiConfig.TLSConfig.CACert = filepath.Join(ner.Config().ConfigDir, "ca.pem")
+	}
+	apiConfig.Address = fmt.Sprintf("%s://%s:%d", scheme, "127.0.0.1", port)
+
+	return nomadapi.NewClient(apiConfig)
 }
 
 func (ner *NomadExecRunner) Wait() error {
