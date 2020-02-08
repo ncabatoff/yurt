@@ -73,7 +73,8 @@ func randomNetwork() string {
 }
 
 func TestConsulDocker(t *testing.T) {
-	testenv, cancel := testSetupDocker(t, 10*time.Second)
+	t.Parallel()
+	testenv, cancel := testSetupDocker(t, 15*time.Second)
 	defer cancel()
 	g, ctx := errgroup.WithContext(testenv.ctx)
 
@@ -182,13 +183,15 @@ func threeNodeConsulDocker(t *testing.T, te dktestenv) (*ConsulClusterRunner, *C
 }
 
 func TestConsulDockerCluster(t *testing.T) {
-	testenv, cancel := testSetupDocker(t, 10*time.Second)
+	t.Parallel()
+	testenv, cancel := testSetupDocker(t, 15*time.Second)
 	defer cancel()
 
 	threeNodeConsulDocker(t, testenv)
 }
 
 func TestNomadDocker(t *testing.T) {
+	t.Parallel()
 	testenv, cancel := testSetupDocker(t, 15*time.Second)
 	defer cancel()
 	g, ctx := errgroup.WithContext(testenv.ctx)
@@ -229,6 +232,7 @@ func TestNomadDocker(t *testing.T) {
 }
 
 func TestNomadDockerCluster(t *testing.T) {
+	t.Parallel()
 	testenv, cancel := testSetupDocker(t, 15*time.Second)
 	defer cancel()
 

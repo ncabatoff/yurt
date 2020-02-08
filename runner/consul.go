@@ -37,6 +37,16 @@ type ConsulPorts struct {
 	Server  int
 }
 
+func SeqConsulPorts(start int, tls bool) ConsulPorts {
+	cp := ConsulPorts{DNS: start + 1, SerfLAN: start + 2, SerfWAN: start + 3, Server: start + 4}
+	if tls {
+		cp.HTTPS, cp.HTTP = start, -1
+	} else {
+		cp.HTTPS, cp.HTTP = -1, start
+	}
+	return cp
+}
+
 func addPort(p *int, inc int) {
 	if *p > 0 {
 		*p += inc

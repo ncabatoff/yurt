@@ -10,7 +10,7 @@ import (
 
 type ConsulClusterConfig interface {
 	ServerCommands() []ConsulCommand
-	ClientCommand(name string) ConsulCommand
+	ClientCommand() ConsulCommand
 	JoinAddrs() []string
 	APIAddrs() []string
 	ServerAddrs() []string
@@ -21,10 +21,17 @@ type ConsulClusterConfigSingleIP struct {
 	ServerNames   []string
 	FirstPorts    ConsulPorts
 	PortIncrement int
-	TLS           []pki.TLSConfigPEM
+	TLS           map[string]pki.TLSConfigPEM
 }
 
 var _ ConsulClusterConfig = ConsulClusterConfigSingleIP{}
+
+func (c ConsulClusterConfigSingleIP) portIncrement() int {
+	if c.PortIncrement == 0 {
+		return 5
+	}
+	return c.PortIncrement
+}
 
 func (c ConsulClusterConfigSingleIP) ServerCommands() []ConsulCommand {
 	var commands []ConsulCommand
@@ -35,25 +42,46 @@ func (c ConsulClusterConfigSingleIP) ServerCommands() []ConsulCommand {
 				JoinAddrs: c.JoinAddrs(),
 				ConfigDir: filepath.Join(c.WorkDir, name, "consul", "config"),
 				DataDir:   filepath.Join(c.WorkDir, name, "consul", "data"),
-				Ports:     c.FirstPorts.Add(i * c.PortIncrement),
+				Ports:     c.FirstPorts.Add(i * c.portIncrement()),
 			},
 		}
-		if len(c.TLS) > i {
-			command.TLS = c.TLS[i]
+		if len(c.TLS) > 0 {
+			command.TLS = c.TLS[name]
 		}
+
 		commands = append(commands, command)
 	}
 	return commands
 }
 
-func (c ConsulClusterConfigSingleIP) ClientCommand(name string) ConsulCommand {
-	panic("implement me")
+func (c ConsulClusterConfigSingleIP) ClientCommand() ConsulCommand {
+	name := "consul-cli-1"
+	cfg := ConsulConfig{
+		NodeName:  name,
+		JoinAddrs: c.JoinAddrs(),
+		ConfigDir: filepath.Join(c.WorkDir, name, "consul", "config"),
+		DataDir:   filepath.Join(c.WorkDir, name, "consul", "data"),
+		Ports:     c.FirstPorts.Add(3 * c.portIncrement()),
+	}
+	if len(c.TLS) > 0 {
+		cfg.TLS = c.TLS[name]
+	}
+	if cfg.TLS.CA == "" {
+		if t := c.TLS[c.ServerNames[0]]; t.CA != "" {
+			// Even if we don't have a server cert for this client, at least give
+			// it the CA it needs to connect to the servers
+			cfg.TLS.CA = t.CA
+		}
+	} else {
+		cfg.Ports = ConsulPorts{HTTP: -1, HTTPS: 8501}
+	}
+	return cfg
 }
 
 func (c ConsulClusterConfigSingleIP) JoinAddrs() []string {
 	var addrs []string
 	for i := range c.ServerNames {
-		port := c.FirstPorts.SerfLAN + c.PortIncrement*i
+		port := c.FirstPorts.SerfLAN + c.portIncrement()*i
 		addrs = append(addrs, fmt.Sprintf("127.0.0.1:%d", port))
 	}
 	return addrs
@@ -62,9 +90,9 @@ func (c ConsulClusterConfigSingleIP) JoinAddrs() []string {
 func (c ConsulClusterConfigSingleIP) APIAddrs() []string {
 	var addrs []string
 	for i := range c.ServerNames {
-		port := c.FirstPorts.HTTP + c.PortIncrement*i
+		port := c.FirstPorts.HTTP + c.portIncrement()*i
 		if len(c.TLS) > 0 {
-			port = c.FirstPorts.HTTPS + c.PortIncrement*i
+			port = c.FirstPorts.HTTPS + c.portIncrement()*i
 		}
 		addrs = append(addrs, fmt.Sprintf("127.0.0.1:%d", port))
 	}
@@ -74,7 +102,7 @@ func (c ConsulClusterConfigSingleIP) APIAddrs() []string {
 func (c ConsulClusterConfigSingleIP) ServerAddrs() []string {
 	var addrs []string
 	for i := range c.ServerNames {
-		port := c.FirstPorts.Server + c.PortIncrement*i
+		port := c.FirstPorts.Server + c.portIncrement()*i
 		addrs = append(addrs, fmt.Sprintf("127.0.0.1:%d", port))
 	}
 	return addrs
@@ -105,7 +133,7 @@ func (c ConsulClusterConfigFixedIPs) ServerCommands() []ConsulCommand {
 	return commands
 }
 
-func (c ConsulClusterConfigFixedIPs) ClientCommand(name string) ConsulCommand {
+func (c ConsulClusterConfigFixedIPs) ClientCommand() ConsulCommand {
 	panic("implement me")
 }
 
@@ -133,6 +161,7 @@ type ConsulClusterRunner struct {
 	Builder ConsulRunnerBuilder
 	Config  ConsulClusterConfig
 	servers []ConsulRunner
+	clients []ConsulRunner
 	group   *errgroup.Group
 }
 
@@ -162,9 +191,62 @@ func (c *ConsulClusterRunner) StartServers(ctx context.Context) error {
 	return nil
 }
 
+func (c *ConsulClusterRunner) StartClient(ctx context.Context) error {
+	c.group, ctx = errgroup.WithContext(ctx)
+
+	command := c.Config.ClientCommand()
+	runner, err := c.Builder.MakeConsulRunner(command)
+	if err != nil {
+		return err
+	}
+	if _, err := runner.Start(ctx); err != nil {
+		return err
+	}
+	c.group.Go(runner.Wait)
+	c.clients = append(c.clients, runner)
+
+	return nil
+}
+
+func (c *ConsulClusterRunner) Client() (ConsulRunner, error) {
+	if len(c.clients) == 0 {
+		return nil, fmt.Errorf("no clients yet")
+	}
+	return c.clients[0], nil
+}
+
+func (c *ConsulClusterRunner) WaitReady(ctx context.Context) error {
+	allRunners := append([]ConsulRunner{}, c.servers...)
+	allRunners = append(allRunners, c.clients...)
+	return ConsulRunnersHealthy(ctx, allRunners, c.Config.ServerAddrs())
+}
+
+func (c *ConsulClusterRunner) WaitExit() error {
+	return c.group.Wait()
+}
+
+func BuildConsulCluster(ctx context.Context, clusterCfg ConsulClusterConfig, builder ConsulRunnerBuilder) (*ConsulClusterRunner, error) {
+	consulCluster, err := NewConsulClusterRunner(clusterCfg, builder)
+	if err != nil {
+		return nil, err
+	}
+	if err := consulCluster.StartServers(ctx); err != nil {
+		return nil, err
+	}
+	if err := consulCluster.StartClient(ctx); err != nil {
+		return nil, err
+	}
+	if err := consulCluster.WaitReady(ctx); err != nil {
+		return nil, err
+	}
+
+	return consulCluster, nil
+}
+
 type NomadClusterConfig interface {
 	ServerCommands() []NomadCommand
-	ClientCommand(name string) NomadCommand
+	ClientCommand() NomadCommand
+	RPCAddrs() []string
 }
 
 type NomadClusterRunner struct {
@@ -173,6 +255,7 @@ type NomadClusterRunner struct {
 	ConsulAddrs    []string
 	NomadPeerAddrs []string
 	servers        []NomadRunner
+	clients        []NomadRunner
 	group          *errgroup.Group
 }
 
@@ -182,7 +265,7 @@ type NomadClusterConfigSingleIP struct {
 	FirstPorts    NomadPorts
 	PortIncrement int
 	ConsulAddrs   []string
-	TLS           []pki.TLSConfigPEM
+	TLS           map[string]pki.TLSConfigPEM
 }
 
 func (n NomadClusterConfigSingleIP) ServerCommands() []NomadCommand {
@@ -194,20 +277,54 @@ func (n NomadClusterConfigSingleIP) ServerCommands() []NomadCommand {
 				NodeName:   name, // "nomad-srv-%d", i+1
 				DataDir:    filepath.Join(n.WorkDir, name, "nomad", "data"),
 				ConfigDir:  filepath.Join(n.WorkDir, name, "nomad", "config"),
-				Ports:      n.FirstPorts.Add(i * n.PortIncrement),
+				Ports:      n.FirstPorts.Add(i * n.portIncrement()),
 				ConsulAddr: n.ConsulAddrs[i],
 			},
 		}
 		if len(n.TLS) > i {
-			command.TLS = n.TLS[i]
+			command.TLS = n.TLS[name]
 		}
 		commands = append(commands, command)
 	}
 	return commands
 }
 
-func (n NomadClusterConfigSingleIP) ClientCommand(name string) NomadCommand {
-	panic("implement me")
+func (n NomadClusterConfigSingleIP) ClientCommand() NomadCommand {
+	name := "nomad-cli-1"
+	cfg := NomadConfig{
+		NodeName:   name,
+		ConfigDir:  filepath.Join(n.WorkDir, name, "nomad", "config"),
+		DataDir:    filepath.Join(n.WorkDir, name, "nomad", "data"),
+		Ports:      n.FirstPorts.Add(3 * n.portIncrement()),
+		ConsulAddr: n.ConsulAddrs[3],
+	}
+	if len(n.TLS) > 0 {
+		cfg.TLS = n.TLS[name]
+	}
+	if cfg.TLS.CA == "" {
+		if t := n.TLS[n.ServerNames[0]]; t.CA != "" {
+			// Even if we don't have a server cert for this client, at least give
+			// it the CA it needs to connect to the servers
+			cfg.TLS.CA = t.CA
+		}
+	}
+	return NomadClientConfig{NomadConfig: cfg}
+}
+
+func (c NomadClusterConfigSingleIP) portIncrement() int {
+	if c.PortIncrement == 0 {
+		return 3
+	}
+	return c.PortIncrement
+}
+
+func (c NomadClusterConfigSingleIP) RPCAddrs() []string {
+	var addrs []string
+	for i := range c.ServerNames {
+		port := c.FirstPorts.RPC + c.portIncrement()*i
+		addrs = append(addrs, fmt.Sprintf("127.0.0.1:%d", port))
+	}
+	return addrs
 }
 
 var _ NomadClusterConfig = NomadClusterConfigSingleIP{}
@@ -219,7 +336,11 @@ type NomadClusterConfigFixedIPs struct {
 	ConsulAddrs []string
 }
 
-func (n NomadClusterConfigFixedIPs) ClientCommand(name string) NomadCommand {
+func (n NomadClusterConfigFixedIPs) RPCAddrs() []string {
+	panic("implement me")
+}
+
+func (n NomadClusterConfigFixedIPs) ClientCommand() NomadCommand {
 	panic("implement me")
 }
 
@@ -270,4 +391,49 @@ func (n *NomadClusterRunner) StartServers(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func (n *NomadClusterRunner) StartClient(ctx context.Context) error {
+	n.group, ctx = errgroup.WithContext(ctx)
+
+	command := n.Config.ClientCommand()
+	runner, err := n.Builder.MakeNomadRunner(command)
+	if err != nil {
+		return err
+	}
+	if _, err := runner.Start(ctx); err != nil {
+		return err
+	}
+	n.group.Go(runner.Wait)
+	n.clients = append(n.clients, runner)
+
+	return nil
+}
+
+func (c *NomadClusterRunner) WaitReady(ctx context.Context) error {
+	allRunners := append([]NomadRunner{}, c.servers...)
+	allRunners = append(allRunners, c.clients...)
+	return NomadRunnersHealthy(ctx, allRunners, c.Config.RPCAddrs())
+}
+
+func BuildNomadCluster(ctx context.Context, clusterCfg NomadClusterConfig, builder NomadRunnerBuilder) (*NomadClusterRunner, error) {
+	nomadCluster, err := NewNomadClusterRunner(clusterCfg, builder)
+	if err != nil {
+		return nil, err
+	}
+	if err := nomadCluster.StartServers(ctx); err != nil {
+		return nil, err
+	}
+	if err := nomadCluster.StartClient(ctx); err != nil {
+		return nil, err
+	}
+	if err := nomadCluster.WaitReady(ctx); err != nil {
+		return nil, err
+	}
+
+	return nomadCluster, nil
+}
+
+func (n *NomadClusterRunner) WaitExit() error {
+	return n.group.Wait()
 }

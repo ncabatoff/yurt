@@ -16,13 +16,22 @@ import (
 
 type CertificateAuthority struct {
 	workDir string
+	port    int
 	cmd     *exec.Cmd
 	cancel  func()
 	cli     *vaultapi.Client
 }
 
-func NewCertificateAuthority(workDir string) (*CertificateAuthority, error) {
-	return &CertificateAuthority{workDir: workDir}, nil
+func NewExternalCertificateAuthority(vaultAddr, vaultToken string) (*CertificateAuthority, error) {
+	cli, err := makeVaultClient(vaultAddr, vaultToken)
+	if err != nil {
+		return nil, err
+	}
+	return &CertificateAuthority{cli: cli}, nil
+}
+
+func NewCertificateAuthority(workDir string, port int) (*CertificateAuthority, error) {
+	return &CertificateAuthority{workDir: workDir, port: port}, nil
 }
 
 func (ca *CertificateAuthority) Start(ctx context.Context) (err error) {
@@ -36,7 +45,8 @@ func (ca *CertificateAuthority) Start(ctx context.Context) (err error) {
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	rootToken := "devroot"
-	cmd := exec.CommandContext(ctx, binPath, "server", "-dev", "-dev-listen-address", "0.0.0.0:8200",
+	cmd := exec.CommandContext(ctx, binPath, "server", "-dev",
+		"-dev-listen-address", fmt.Sprintf("0.0.0.0:%d", ca.port),
 		"-dev-root-token-id", rootToken)
 	cmd.Stdout = util.NewOutputWriter("vault-ca", os.Stdout)
 	cmd.Stderr = util.NewOutputWriter("vault-ca", os.Stderr)
@@ -52,7 +62,7 @@ func (ca *CertificateAuthority) Start(ctx context.Context) (err error) {
 		}
 	}()
 
-	ca.cli, err = makeVaultClient(rootToken)
+	ca.cli, err = makeVaultClient(fmt.Sprintf("http://localhost:%d", ca.port), rootToken)
 	if err != nil {
 		return err
 	}
@@ -84,9 +94,9 @@ func waitVaultUnsealed(ctx context.Context, cli *vaultapi.Client) (err error) {
 	return fmt.Errorf("unseal failed, last error: %v", err)
 }
 
-func makeVaultClient(token string) (*vaultapi.Client, error) {
+func makeVaultClient(addr, token string) (*vaultapi.Client, error) {
 	vaultConfig := vaultapi.DefaultConfig()
-	vaultConfig.Address = "http://localhost:8200"
+	vaultConfig.Address = addr
 	cli, err := vaultapi.NewClient(vaultConfig)
 	if err != nil {
 		return nil, err

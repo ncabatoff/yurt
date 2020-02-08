@@ -8,6 +8,7 @@ import (
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/stdcopy"
 	consulapi "github.com/hashicorp/consul/api"
 	nomadapi "github.com/hashicorp/nomad/api"
 	"go.uber.org/atomic"
@@ -45,7 +46,6 @@ func (c *ConsulDockerRunner) Config() ConsulConfig {
 }
 
 func (c *ConsulDockerRunner) Start(ctx context.Context) (net.IP, error) {
-	// TODO handle output
 	if c.container != nil {
 		return nil, fmt.Errorf("already running")
 	}
@@ -61,8 +61,6 @@ func (c *ConsulDockerRunner) Start(ctx context.Context) (net.IP, error) {
 			Labels: map[string]string{
 				"yurt": "true",
 			},
-			//cmd.Stdout = NewOutputWriter(c.Config.NodeName, os.Stdout)
-			//cmd.Stderr = NewOutputWriter(c.Config.NodeName, os.Stderr)
 		},
 		containerName: consulConfig.NodeName,
 		ip:            c.IP,
@@ -76,10 +74,30 @@ func (c *ConsulDockerRunner) Start(ctx context.Context) (net.IP, error) {
 	c.container = cont
 	c.cancel = cancel
 	go func() {
+		_ = containerLogs(ctx, c.DockerAPI, *c.container)
+	}()
+	go func() {
 		<-ctx.Done()
 		_ = cleanupContainer(context.Background(), c.DockerAPI, cont.ID)
 	}()
 	return getIP(*cont, consulConfig.NetworkConfig.DockerNetName)
+}
+
+func containerLogs(ctx context.Context, cli *client.Client, cont types.ContainerJSON) error {
+	resp, err := cli.ContainerLogs(ctx, cont.ID, types.ContainerLogsOptions{
+		ShowStdout: true,
+		ShowStderr: true,
+		Follow:     true,
+	})
+	if err != nil {
+		return err
+	}
+
+	_, err = stdcopy.StdCopy(os.Stderr, os.Stderr, resp)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func (c ConsulDockerRunner) Wait() error {
@@ -201,7 +219,7 @@ func (d *dockerRunner) start(ctx context.Context) (*types.ContainerJSON, error) 
 
 	err = d.DockerAPI.ContainerStart(ctx, consulContainer.ID, types.ContainerStartOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("consul container start failed: %v", err)
+		return nil, fmt.Errorf("container start failed: %v", err)
 	}
 
 	inspect, err := d.DockerAPI.ContainerInspect(ctx, consulContainer.ID)

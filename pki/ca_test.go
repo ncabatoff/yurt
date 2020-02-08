@@ -32,7 +32,7 @@ func testca(t *testing.T, timeout time.Duration) *testenv {
 		}
 	}()
 	var ca *CertificateAuthority
-	ca, err = NewCertificateAuthority(tmpdir)
+	ca, err = NewCertificateAuthority(tmpdir, 8200)
 	if err != nil {
 		t.Fatal(err)
 	}

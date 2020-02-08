@@ -3,16 +3,40 @@ package runner
 import (
 	"context"
 	"fmt"
-	"github.com/ncabatoff/yurt/pki"
 	"io/ioutil"
-	"math/rand"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/ncabatoff/yurt/pki"
+	"go.uber.org/atomic"
 	"golang.org/x/sync/errgroup"
 )
+
+var nextPort = atomic.NewUint32(20000)
+
+func nextConsulPorts(tls bool) ConsulPorts {
+	start := nextPort.Add(5) - 5
+	return SeqConsulPorts(int(start), tls)
+}
+
+func nextConsulBatch(nodes int, tls bool) ConsulPorts {
+	numPorts := 5 * nodes
+	start := int(nextPort.Add(uint32(numPorts))) - numPorts
+	return SeqConsulPorts(int(start), tls)
+}
+
+func nextNomadPorts() NomadPorts {
+	start := nextPort.Add(3) - 3
+	return SeqNomadPorts(int(start))
+}
+
+func nextNomadBatch(nodes int) NomadPorts {
+	numPorts := 3 * nodes
+	start := int(nextPort.Add(uint32(numPorts))) - numPorts
+	return SeqNomadPorts(int(start))
+}
 
 type testenv struct {
 	tmpDir                string
@@ -57,7 +81,7 @@ func newtestenv(t *testing.T, timeout time.Duration) testenv {
 
 func tempca(t *testing.T, ctx context.Context, tmpdir string) *pki.CertificateAuthority {
 	t.Helper()
-	ca, err := pki.NewCertificateAuthority(tmpdir)
+	ca, err := pki.NewCertificateAuthority(tmpdir, int(nextPort.Add(1)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,25 +93,31 @@ func tempca(t *testing.T, ctx context.Context, tmpdir string) *pki.CertificateAu
 }
 
 func TestConsulExec(t *testing.T) {
-	te := newtestenv(t, 15*time.Second)
+	t.Parallel()
+	te := newtestenv(t, 30*time.Second)
 	defer te.cleanup()
 
+	ports := nextConsulPorts(false)
 	testConsulExec(t, te, ConsulServerConfig{
 		ConsulConfig{
 			NodeName:  "consul-test",
-			JoinAddrs: []string{"127.0.0.1:8301"},
+			JoinAddrs: []string{fmt.Sprintf("127.0.0.1:%d", ports.SerfLAN)},
+			Ports:     ports,
 		},
 	})
 }
 
 func TestConsulExecTLS(t *testing.T) {
-	te := newtestenv(t, 15*time.Second)
+	t.Parallel()
+	te := newtestenv(t, 30*time.Second)
 	defer te.cleanup()
 
+	ports := nextConsulPorts(true)
 	ca := tempca(t, te.ctx, te.tmpDir)
 	testConsulExecTLS(t, te, ca, ConsulConfig{
 		NodeName:  "consul-test",
-		JoinAddrs: []string{"127.0.0.1:8301"},
+		JoinAddrs: []string{fmt.Sprintf("127.0.0.1:%d", ports.SerfLAN)},
+		Ports:     ports,
 	})
 }
 
@@ -97,7 +127,6 @@ func testConsulExecTLS(t *testing.T, te testenv, ca *pki.CertificateAuthority, c
 		t.Fatal(err)
 	}
 	cfg.TLS = *tls
-	cfg.Ports.HTTP, cfg.Ports.HTTPS = -1, 8501
 	testConsulExec(t, te, ConsulServerConfig{ConsulConfig: cfg})
 }
 
@@ -112,158 +141,110 @@ func testConsulExec(t *testing.T, te testenv, cfg ConsulServerConfig) {
 	}
 	te.group.Go(runner.Wait)
 
-	expectedPeerAddrs := []string{fmt.Sprintf("%s:%d", ip, 8300)}
+	expectedPeerAddrs := []string{fmt.Sprintf("%s:%d", ip, cfg.Ports.Server)}
 	if err := ConsulRunnersHealthy(te.ctx, []ConsulRunner{runner}, expectedPeerAddrs); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func threeNodeConsulExecNoTLS(t *testing.T, te testenv) (*ConsulClusterRunner, *ConsulExecRunner) {
-	clientName := "consul-cli-1"
-	firstPort := int(rand.Int31n(20000) + 2000)
-	return threeNodeConsulExec(t, te,
+func threeNodeConsulExecNoTLS(t *testing.T, te testenv) (*ConsulClusterRunner, error) {
+	return BuildConsulCluster(te.ctx,
 		ConsulClusterConfigSingleIP{
 			WorkDir:     te.tmpDir,
 			ServerNames: []string{"consul-srv-1", "consul-srv-2", "consul-srv-3"},
-			FirstPorts: ConsulPorts{
-				HTTP:    firstPort,
-				HTTPS:   -1,
-				DNS:     firstPort + 1,
-				SerfLAN: firstPort + 2,
-				SerfWAN: firstPort + 3,
-				Server:  firstPort + 4,
-			},
-			PortIncrement: 5,
-		}, ConsulConfig{
-			NodeName:  clientName,
-			ConfigDir: filepath.Join(te.tmpDir, clientName, "consul", "config"),
-			DataDir:   filepath.Join(te.tmpDir, clientName, "consul", "data"),
-		})
+			FirstPorts:  nextConsulBatch(4, false),
+		}, &ConsulExecBuilder{te.consulPath})
 }
 
-func threeNodeConsulExecTLS(t *testing.T, te testenv, ca *pki.CertificateAuthority) (*ConsulClusterRunner, *ConsulExecRunner) {
-	certs := make([]pki.TLSConfigPEM, 4)
+func threeNodeConsulExecTLS(t *testing.T, te testenv, ca *pki.CertificateAuthority) (*ConsulClusterRunner, error) {
+	names := []string{"consul-srv-1", "consul-srv-2", "consul-srv-3", "consul-cli-1"}
+	certs := make(map[string]pki.TLSConfigPEM)
 	for i := 0; i < 4; i++ {
 		tls, err := ca.ConsulServerTLS(te.ctx, "127.0.0.1", "10m")
 		if err != nil {
 			t.Fatal(err)
 		}
-		certs[i] = *tls
+		certs[names[i]] = *tls
 	}
 
-	clientName := "consul-cli-1"
-	firstPort := int(rand.Int31n(20000) + 2000)
-	return threeNodeConsulExec(t, te,
+	return BuildConsulCluster(te.ctx,
 		ConsulClusterConfigSingleIP{
 			WorkDir:     te.tmpDir,
-			ServerNames: []string{"consul-srv-1", "consul-srv-2", "consul-srv-3"},
-			FirstPorts: ConsulPorts{
-				HTTP:    -1,
-				HTTPS:   firstPort,
-				DNS:     firstPort + 1,
-				SerfLAN: firstPort + 2,
-				SerfWAN: firstPort + 3,
-				Server:  firstPort + 4,
-			},
-			PortIncrement: 5,
-			TLS:           certs[:3],
-		}, ConsulConfig{
-			NodeName:  clientName,
-			ConfigDir: filepath.Join(te.tmpDir, clientName, "consul", "config"),
-			DataDir:   filepath.Join(te.tmpDir, clientName, "consul", "data"),
-			Ports: ConsulPorts{
-				HTTP:  -1,
-				HTTPS: 8501,
-			},
-			TLS: certs[3],
-		})
-}
-
-func threeNodeConsulExec(t *testing.T, te testenv, serverCfg ConsulClusterConfig, clientCfg ConsulConfig) (*ConsulClusterRunner, *ConsulExecRunner) {
-	consulCluster, err := NewConsulClusterRunner(serverCfg, &ConsulExecBuilder{te.consulPath})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := consulCluster.StartServers(te.ctx); err != nil {
-		t.Fatal(err)
-	}
-
-	clientCfg.JoinAddrs = consulCluster.Config.JoinAddrs()
-	clientRunner, _ := NewConsulExecRunner(te.consulPath, clientCfg)
-	if _, err := clientRunner.Start(te.ctx); err != nil {
-		t.Fatal(err)
-	}
-	te.group.Go(clientRunner.Wait)
-
-	go func() {
-		if err := consulCluster.group.Wait(); err != nil {
-			t.Log(err)
-		}
-	}()
-
-	runners := []ConsulRunner{clientRunner}
-	for _, runner := range consulCluster.servers {
-		runners = append(runners, runner)
-	}
-	if err := ConsulRunnersHealthy(te.ctx, runners, consulCluster.Config.ServerAddrs()); err != nil {
-		t.Fatal(err)
-	}
-
-	return consulCluster, clientRunner
+			ServerNames: names[:3],
+			FirstPorts:  nextConsulBatch(4, true),
+			TLS:         certs,
+		}, &ConsulExecBuilder{te.consulPath})
 }
 
 func TestConsulExecCluster(t *testing.T) {
-	te := newtestenv(t, 15*time.Second)
+	t.Parallel()
+	te := newtestenv(t, 30*time.Second)
 	defer te.cleanup()
-	threeNodeConsulExecNoTLS(t, te)
+	if _, err := threeNodeConsulExecNoTLS(t, te); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestConsulExecClusterTLS(t *testing.T) {
-	te := newtestenv(t, 15*time.Second)
+	t.Parallel()
+	te := newtestenv(t, 30*time.Second)
 	defer te.cleanup()
 	ca := tempca(t, te.ctx, te.tmpDir)
-	threeNodeConsulExecTLS(t, te, ca)
+	if _, err := threeNodeConsulExecTLS(t, te, ca); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // TestNomadExec tests a single node Nomad cluster talking to a single node Consul cluster.
 func TestNomadExec(t *testing.T) {
-	te := newtestenv(t, 15*time.Second)
+	t.Parallel()
+	te := newtestenv(t, 30*time.Second)
 	defer te.cleanup()
 
+	consulPorts := nextConsulPorts(false)
 	testConsulExec(t, te, ConsulServerConfig{
 		ConsulConfig{
 			NodeName:  "consul-test",
-			JoinAddrs: []string{"127.0.0.1:8301"},
+			JoinAddrs: []string{fmt.Sprintf("127.0.0.1:%d", consulPorts.SerfLAN)},
+			Ports:     consulPorts,
 		}})
 
 	testNomadExec(t, te, NomadServerConfig{
 		BootstrapExpect: 1,
 		NomadConfig: NomadConfig{
 			NodeName:   "nomad-test",
-			ConsulAddr: "127.0.0.1:8500",
+			ConsulAddr: fmt.Sprintf("127.0.0.1:%d", consulPorts.HTTP),
+			Ports:      nextNomadPorts(),
 		}})
 }
 
+// TestNomadExecTLS tests a single node Nomad cluster talking to a single node
+// Consul cluster.  A TLS server cert is generated for each of the Nomad and
+// Cluster servers, and their API listeners only accept HTTPS.
 func TestNomadExecTLS(t *testing.T) {
-	te := newtestenv(t, 15*time.Second)
+	t.Parallel()
+	te := newtestenv(t, 30*time.Second)
 	defer te.cleanup()
 
+	consulPorts := nextConsulPorts(true)
 	ca := tempca(t, te.ctx, te.tmpDir)
 	testConsulExecTLS(t, te, ca, ConsulConfig{
 		NodeName:  "consul-test",
-		JoinAddrs: []string{"127.0.0.1:8301"},
+		JoinAddrs: []string{fmt.Sprintf("127.0.0.1:%d", consulPorts.SerfLAN)},
+		Ports:     consulPorts,
 	})
 
 	testNomadExecTLS(t, te, ca, NomadServerConfig{
 		BootstrapExpect: 1,
 		NomadConfig: NomadConfig{
 			NodeName:   "nomad-test",
-			ConsulAddr: "127.0.0.1:8500",
+			ConsulAddr: fmt.Sprintf("127.0.0.1:%d", consulPorts.HTTPS),
+			Ports:      nextNomadPorts(),
 		}})
 }
 
 func testNomadExecTLS(t *testing.T, te testenv, ca *pki.CertificateAuthority, cfg NomadServerConfig) {
-	tls, err := ca.ConsulServerTLS(te.ctx, "127.0.0.1", "10m")
+	tls, err := ca.NomadServerTLS(te.ctx, "127.0.0.1", "10m")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,78 +263,62 @@ func testNomadExec(t *testing.T, te testenv, cfg NomadServerConfig) {
 	}
 	te.group.Go(runner.Wait)
 
-	expectedNomadPeers := []string{fmt.Sprintf("%s:%d", ip, 4648)}
+	expectedNomadPeers := []string{fmt.Sprintf("%s:%d", ip, cfg.Ports.RPC)}
 	if err := NomadRunnersHealthy(te.ctx, []NomadRunner{runner}, expectedNomadPeers); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestNomadExecCluster(t *testing.T) {
-	te := newtestenv(t, 15*time.Second)
+	t.Parallel()
+	te := newtestenv(t, 30*time.Second)
 	defer te.cleanup()
 
 	consulCluster, _ := threeNodeConsulExecNoTLS(t, te)
+	clientPorts := consulCluster.clients[0].Config().Ports
 
-	firstPort := int(rand.Int31n(20000) + 2000)
 	testNomadExecCluster(t, te, NomadClusterConfigSingleIP{
 		WorkDir:     filepath.Join(te.tmpDir, "nomad"),
 		ServerNames: []string{"nomad-srv-1", "nomad-srv-2", "nomad-srv-3"},
-		FirstPorts: NomadPorts{
-			HTTP: firstPort,
-			Serf: firstPort + 1,
-			RPC:  firstPort + 2,
-		},
-		PortIncrement: 3,
-		ConsulAddrs:   consulCluster.Config.APIAddrs(),
-	},
-	)
+		FirstPorts:  nextNomadBatch(4),
+		ConsulAddrs: append(consulCluster.Config.APIAddrs(), fmt.Sprintf("localhost:%d", clientPorts.HTTP)),
+	})
 }
 
 func TestNomadExecClusterTLS(t *testing.T) {
-	te := newtestenv(t, 15*time.Second)
+	t.Parallel()
+	names := []string{"nomad-srv-1", "nomad-srv-2", "nomad-srv-3", "nomad-cli-1"}
+	te := newtestenv(t, 30*time.Second)
 	defer te.cleanup()
 
 	ca := tempca(t, te.ctx, te.tmpDir)
-	consulCluster, _ := threeNodeConsulExecTLS(t, te, ca)
+	consulCluster, err := threeNodeConsulExecTLS(t, te, ca)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientPorts := consulCluster.clients[0].Config().Ports
 
-	certs := make([]pki.TLSConfigPEM, 3)
-	for i := 0; i < 3; i++ {
+	certs := make(map[string]pki.TLSConfigPEM)
+	for i := 0; i < 4; i++ {
 		tls, err := ca.NomadServerTLS(te.ctx, "127.0.0.1", "10m")
 		if err != nil {
 			t.Fatal(err)
 		}
-		certs[i] = *tls
+		certs[names[i]] = *tls
 	}
 
-	firstPort := int(rand.Int31n(20000) + 2000)
 	testNomadExecCluster(t, te, NomadClusterConfigSingleIP{
 		WorkDir:     filepath.Join(te.tmpDir, "nomad"),
-		ServerNames: []string{"nomad-srv-1", "nomad-srv-2", "nomad-srv-3"},
-		FirstPorts: NomadPorts{
-			HTTP: firstPort,
-			Serf: firstPort + 1,
-			RPC:  firstPort + 2,
-		},
-		PortIncrement: 3,
-		ConsulAddrs:   consulCluster.Config.APIAddrs(),
-		TLS:           certs,
+		ServerNames: names[:3],
+		FirstPorts:  nextNomadBatch(4),
+		ConsulAddrs: append(consulCluster.Config.APIAddrs(), fmt.Sprintf("localhost:%d", clientPorts.HTTPS)),
+		TLS:         certs,
 	})
 }
 
 func testNomadExecCluster(t *testing.T, te testenv, serverCfg NomadClusterConfigSingleIP) {
-	nomadCluster, err := NewNomadClusterRunner(serverCfg, &NomadExecBuilder{te.nomadPath})
+	_, err := BuildNomadCluster(te.ctx, serverCfg, &NomadExecBuilder{te.nomadPath})
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err := nomadCluster.StartServers(te.ctx); err != nil {
-		t.Fatal(err)
-	}
-
-	var expectedNomadPeers []string
-	for _, runner := range nomadCluster.servers {
-		expectedNomadPeers = append(expectedNomadPeers, fmt.Sprintf("127.0.0.1:%d", runner.Config().Ports.RPC))
-	}
-	if err := NomadRunnersHealthy(te.ctx, nomadCluster.servers, expectedNomadPeers); err != nil {
 		t.Fatal(err)
 	}
 }

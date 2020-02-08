@@ -33,6 +33,10 @@ type NomadPorts struct {
 	RPC  int
 }
 
+func SeqNomadPorts(start int) NomadPorts {
+	return NomadPorts{HTTP: start, Serf: start + 1, RPC: start + 2}
+}
+
 func (n NomadPorts) Add(inc int) NomadPorts {
 	addPort(&n.HTTP, inc)
 	addPort(&n.Serf, inc)
@@ -62,6 +66,10 @@ type NomadServerConfig struct {
 	NomadConfig
 	BootstrapExpect int
 	// TLS certs + private keys
+}
+
+type NomadClientConfig struct {
+	NomadConfig
 }
 
 func (nc NomadConfig) Command() []string {
@@ -174,6 +182,6 @@ func (nc NomadServerConfig) WithDirs(config, data, log string) NomadCommand {
 	return nc
 }
 
-func (nc NomadServerConfig) Files() map[string]string {
-	return nc.NomadConfig.Files()
+func (nc NomadClientConfig) Command() []string {
+	return append(nc.NomadConfig.Command(), "-client")
 }

@@ -13,7 +13,7 @@ import (
 var registry = map[string]Upstream{
 	"nomad": {
 		name:      "nomad",
-		version:   "0.10.2",
+		version:   "0.10.3",
 		urlFormat: "https://releases.hashicorp.com/nomad/%s/nomad_%s_%s_%s.zip",
 	},
 	"consul": {
