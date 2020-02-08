@@ -78,7 +78,6 @@ type ConsulConfig struct {
 // needed by servers.
 type ConsulServerConfig struct {
 	ConsulConfig
-	// TLS certs + private keys
 }
 
 func (cc ConsulConfig) Command() []string {
@@ -86,7 +85,7 @@ func (cc ConsulConfig) Command() []string {
 		fmt.Sprintf("-data-dir=%s", cc.DataDir),
 		fmt.Sprintf("-retry-interval=1s"),
 	}
-	if cc.NetworkConfig.Network.IP != nil {
+	if cc.NetworkConfig.Network != nil {
 		args = append(args, "-client=0.0.0.0")
 		// TODO try to restore this
 		//		fmt.Sprintf(`-bind={{ GetPrivateInterfaces | include "network" "%s" | attr "address" }}`,

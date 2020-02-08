@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"github.com/hashicorp/go-sockaddr"
 	"math/rand"
 	"net"
 	"path/filepath"
@@ -76,12 +77,15 @@ func TestConsulDocker(t *testing.T) {
 	defer cancel()
 	g, ctx := errgroup.WithContext(testenv.ctx)
 
-	_, network := ipnet(t, testenv.netCidr)
+	sa, err := sockaddr.NewSockAddr(testenv.netCidr)
+	if err != nil {
+		t.Fatal(err)
+	}
 	runner, err := NewConsulDockerRunner(testenv.docker, imageConsul, "", ConsulServerConfig{
 		ConsulConfig{
 			NetworkConfig: NetworkConfig{
 				DockerNetName: testenv.netName,
-				Network:       network,
+				Network:       sa,
 			},
 			NodeName:  "consul-test",
 			DataDir:   filepath.Join(testenv.tmpDir, "consul-data"),
@@ -105,14 +109,14 @@ func TestConsulDocker(t *testing.T) {
 	}()
 
 	expectedPeers := []string{fmt.Sprintf("%s:%d", ip, 8300)}
-	if err := consulRunnersHealthy(ctx, []ConsulRunner{runner}, expectedPeers); err != nil {
+	if err := ConsulRunnersHealthy(ctx, []ConsulRunner{runner}, expectedPeers); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func (te dktestenv) NetworkConfig() NetworkConfig {
-	_, n, _ := net.ParseCIDR(te.netCidr)
-	return NetworkConfig{Network: *n, DockerNetName: te.netName}
+	sa, _ := sockaddr.NewSockAddr(te.netCidr)
+	return NetworkConfig{Network: sa, DockerNetName: te.netName}
 }
 
 func threeNodeConsulDocker(t *testing.T, te dktestenv) (*ConsulClusterRunner, *ConsulDockerRunner) {
@@ -171,7 +175,7 @@ func threeNodeConsulDocker(t *testing.T, te dktestenv) (*ConsulClusterRunner, *C
 	for _, ip := range ips {
 		expectedPeers = append(expectedPeers, ip+":8300")
 	}
-	if err := consulRunnersHealthy(te.ctx, runners, expectedPeers); err != nil {
+	if err := ConsulRunnersHealthy(te.ctx, runners, expectedPeers); err != nil {
 		t.Fatal(err)
 	}
 	return cluster, clientRunner
@@ -219,7 +223,7 @@ func TestNomadDocker(t *testing.T) {
 	}()
 
 	expectedPeers := []string{fmt.Sprintf("%s:%d", ip, 4648)}
-	if err := nomadRunnersHealthy(ctx, []NomadRunner{nomadRunner}, expectedPeers); err != nil {
+	if err := NomadRunnersHealthy(ctx, []NomadRunner{nomadRunner}, expectedPeers); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -249,7 +253,7 @@ func TestNomadDockerCluster(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := nomadRunnersHealthy(testenv.ctx, nomadCluster.servers, nomadCluster.NomadPeerAddrs); err != nil {
+	if err := NomadRunnersHealthy(testenv.ctx, nomadCluster.servers, nomadCluster.NomadPeerAddrs); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -14,6 +14,7 @@ require (
 	github.com/hashicorp/consul/api v1.3.0
 	github.com/hashicorp/go-getter v1.4.1
 	github.com/hashicorp/go-hclog v0.8.0
+	github.com/hashicorp/go-sockaddr v1.0.2
 	github.com/hashicorp/nomad/api v0.0.0-20200124004857-fea44b0d8e20
 	github.com/hashicorp/vault/api v1.0.4
 	github.com/hashicorp/vault/sdk v0.1.13

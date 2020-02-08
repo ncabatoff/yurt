@@ -70,7 +70,7 @@ func (nc NomadConfig) Command() []string {
 		fmt.Sprintf("-retry-interval=1s"),
 		fmt.Sprintf("-consul-checks-use-advertise"),
 	}
-	if nc.NetworkConfig.Network.IP != nil {
+	if nc.NetworkConfig.Network != nil {
 		args = append(args,
 			fmt.Sprintf(`-bind={{ GetPrivateInterfaces | include "network" "%s" | attr "address" }}`,
 				nc.NetworkConfig.Network.String()))
@@ -136,8 +136,8 @@ func (nc NomadConfig) Files() map[string]string {
 		portRPC = nc.Ports.RPC
 	}
 	network := "127.0.0.0/8"
-	if nc.NetworkConfig.Network.IP != nil {
-		network = nc.NetworkConfig.Network.IP.String()
+	if nc.NetworkConfig.Network != nil {
+		network = nc.NetworkConfig.Network.String()
 	}
 	files["common.hcl"] = fmt.Sprintf(`
 advertise {

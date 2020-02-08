@@ -113,7 +113,7 @@ func testConsulExec(t *testing.T, te testenv, cfg ConsulServerConfig) {
 	te.group.Go(runner.Wait)
 
 	expectedPeerAddrs := []string{fmt.Sprintf("%s:%d", ip, 8300)}
-	if err := consulRunnersHealthy(te.ctx, []ConsulRunner{runner}, expectedPeerAddrs); err != nil {
+	if err := ConsulRunnersHealthy(te.ctx, []ConsulRunner{runner}, expectedPeerAddrs); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -205,7 +205,7 @@ func threeNodeConsulExec(t *testing.T, te testenv, serverCfg ConsulClusterConfig
 	for _, runner := range consulCluster.servers {
 		runners = append(runners, runner)
 	}
-	if err := consulRunnersHealthy(te.ctx, runners, consulCluster.Config.ServerAddrs()); err != nil {
+	if err := ConsulRunnersHealthy(te.ctx, runners, consulCluster.Config.ServerAddrs()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -283,7 +283,7 @@ func testNomadExec(t *testing.T, te testenv, cfg NomadServerConfig) {
 	te.group.Go(runner.Wait)
 
 	expectedNomadPeers := []string{fmt.Sprintf("%s:%d", ip, 4648)}
-	if err := nomadRunnersHealthy(te.ctx, []NomadRunner{runner}, expectedNomadPeers); err != nil {
+	if err := NomadRunnersHealthy(te.ctx, []NomadRunner{runner}, expectedNomadPeers); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -353,7 +353,7 @@ func testNomadExecCluster(t *testing.T, te testenv, serverCfg NomadClusterConfig
 	for _, runner := range nomadCluster.servers {
 		expectedNomadPeers = append(expectedNomadPeers, fmt.Sprintf("127.0.0.1:%d", runner.Config().Ports.RPC))
 	}
-	if err := nomadRunnersHealthy(te.ctx, nomadCluster.servers, expectedNomadPeers); err != nil {
+	if err := NomadRunnersHealthy(te.ctx, nomadCluster.servers, expectedNomadPeers); err != nil {
 		t.Fatal(err)
 	}
 }
