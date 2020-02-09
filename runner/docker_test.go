@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/hashicorp/go-sockaddr"
+	"github.com/ncabatoff/yurt/pki"
 	"math/rand"
 	"net"
 	"path/filepath"
@@ -11,19 +12,17 @@ import (
 	"time"
 
 	dockerapi "github.com/docker/docker/client"
-	"golang.org/x/sync/errgroup"
 )
 
 const (
-	imageConsul = "consul:1.6.2"
+	imageConsul = "consul:1.7.0-beta4"
 	// There's no official nomad docker image
-	imageNomad = "noenv/nomad:0.10.2"
+	imageNomad = "noenv/nomad:0.10.3"
 )
 
 type dktestenv struct {
 	docker  *dockerapi.Client
-	netName string
-	netCidr string
+	netConf NetworkConfig
 	tmpDir  string
 	ctx     context.Context
 }
@@ -41,17 +40,25 @@ func testSetupDocker(t *testing.T, timeout time.Duration) (dktestenv, func()) {
 	}
 
 	tmpDir, ctx, cleanup := testSetup(t, timeout)
-	cidr := randomNetwork()
+	cidr := fmt.Sprintf("10.%d.%d.0/24", rand.Int31n(255), rand.Int31n(255))
 	_, err = setupNetwork(ctx, cli, t.Name(), cidr)
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	sa, err := sockaddr.NewSockAddr(cidr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	return dktestenv{
-			docker:  cli,
-			netName: t.Name(),
-			netCidr: cidr,
-			tmpDir:  tmpDir,
-			ctx:     ctx,
+			docker: cli,
+			netConf: NetworkConfig{
+				DockerNetName: t.Name(),
+				Network:       sa,
+			},
+			tmpDir: tmpDir,
+			ctx:    ctx,
 		}, func() {
 			//_ = cli.NetworkRemove(ctx, netID)
 			cleanup()
@@ -67,75 +74,75 @@ func ipnet(t *testing.T, cidr string) (net.IP, net.IPNet) {
 	return i, *n
 }
 
-// return a random 10. /24
-func randomNetwork() string {
-	return fmt.Sprintf("10.%d.%d.0/24", rand.Int31n(255), rand.Int31n(255))
+func testConsulDockerTLS(t *testing.T, te dktestenv, ca *pki.CertificateAuthority, cfg ConsulServerConfig) {
+	tls, err := ca.ConsulServerTLS(te.ctx, "127.0.0.1", "10m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.TLS = *tls
+	testConsulDocker(t, te, cfg)
 }
 
+func testConsulDocker(t *testing.T, te dktestenv, cfg ConsulServerConfig) {
+	cfg.ConfigDir = filepath.Join(te.tmpDir, "consul/config")
+	cfg.DataDir = filepath.Join(te.tmpDir, "consul/data")
+	runner, _ := NewConsulDockerRunner(te.docker, imageConsul, "", cfg)
+
+	ip, err := runner.Start(te.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expectedPeerAddrs := []string{fmt.Sprintf("%s:%d", ip, cfg.Ports.Server)}
+	if err := ConsulRunnersHealthy(te.ctx, []ConsulRunner{runner}, expectedPeerAddrs); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestConsulDocker tests a single node docker Consul cluster.
 func TestConsulDocker(t *testing.T) {
 	t.Parallel()
-	testenv, cancel := testSetupDocker(t, 15*time.Second)
+	te, cancel := testSetupDocker(t, 15*time.Second)
 	defer cancel()
-	g, ctx := errgroup.WithContext(testenv.ctx)
 
-	sa, err := sockaddr.NewSockAddr(testenv.netCidr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	runner, err := NewConsulDockerRunner(testenv.docker, imageConsul, "", ConsulServerConfig{
-		ConsulConfig{
-			NetworkConfig: NetworkConfig{
-				DockerNetName: testenv.netName,
-				Network:       sa,
-			},
-			NodeName:  "consul-test",
-			DataDir:   filepath.Join(testenv.tmpDir, "consul-data"),
-			JoinAddrs: []string{"127.0.0.1:8301"},
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	ip, err := runner.Start(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	g.Go(runner.Wait)
-
-	go func() {
-		if err := g.Wait(); err != nil {
-			t.Log(err)
-		}
-	}()
-
-	expectedPeers := []string{fmt.Sprintf("%s:%d", ip, 8300)}
-	if err := ConsulRunnersHealthy(ctx, []ConsulRunner{runner}, expectedPeers); err != nil {
-		t.Fatal(err)
-	}
+	testConsulDocker(t, te, ConsulServerConfig{ConsulConfig: ConsulConfig{
+		NetworkConfig: te.netConf,
+		NodeName:      "consul-srv1",
+		JoinAddrs:     []string{"127.0.0.1:8301"},
+		Ports:         DefConsulPorts(false),
+	}})
 }
 
-func (te dktestenv) NetworkConfig() NetworkConfig {
-	sa, _ := sockaddr.NewSockAddr(te.netCidr)
-	return NetworkConfig{Network: sa, DockerNetName: te.netName}
+// TestConsulDockerTLS tests a single node docker Consul cluster with TLS.
+func TestConsulDockerTLS(t *testing.T) {
+	t.Parallel()
+	te, cancel := testSetupDocker(t, 15*time.Second)
+	defer cancel()
+
+	ca := tempca(t, te.ctx, te.tmpDir)
+	testConsulDockerTLS(t, te, ca, ConsulServerConfig{ConsulConfig: ConsulConfig{
+		NetworkConfig: te.netConf,
+		NodeName:      "consul-srv1",
+		JoinAddrs:     []string{"127.0.0.1:8301"},
+		Ports:         DefConsulPorts(true),
+	}})
 }
 
-func threeNodeConsulDocker(t *testing.T, te dktestenv) (*ConsulClusterRunner, *ConsulDockerRunner) {
-	t.Helper()
-	nodeNames := []string{"consul-srv-1", "consul-srv-2", "consul-srv-3"}
+func threeNodeConsulDocker(t *testing.T, te dktestenv) (*ConsulClusterRunner, error) {
+	names := []string{"consul-srv-1", "consul-srv-2", "consul-srv-3", "consul-cli-1"}
 	var ips []string
-	netip, _ := ipnet(t, te.netCidr)
+	netip, _ := ipnet(t, te.netConf.Network.String())
 	serverIP := netip.To4()
-	for i := range nodeNames {
+	for i := range names {
 		serverIP[3] = byte(i) + 51
 		ips = append(ips, serverIP.String())
 	}
-	cluster, err := NewConsulClusterRunner(
+	return BuildConsulCluster(te.ctx,
 		ConsulClusterConfigFixedIPs{
-			NetworkConfig:   te.NetworkConfig(),
+			NetworkConfig:   te.netConf,
 			WorkDir:         te.tmpDir,
-			ServerNames:     nodeNames,
-			ConsulServerIPs: ips,
+			ServerNames:     names,
+			ConsulServerIPs: ips[:3],
 		},
 		&ConsulDockerServerBuilder{
 			DockerAPI: te.docker,
@@ -143,121 +150,205 @@ func threeNodeConsulDocker(t *testing.T, te dktestenv) (*ConsulClusterRunner, *C
 			IPs:       ips,
 		},
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := cluster.StartServers(te.ctx); err != nil {
-		t.Fatal(err)
-	}
-
-	var runners []ConsulRunner
-	for _, runner := range cluster.servers {
-		runners = append(runners, runner)
-	}
-
-	clientRunner, _ := NewConsulDockerRunner(te.docker, imageConsul, "", ConsulConfig{
-		NetworkConfig: te.NetworkConfig(),
-		NodeName:      fmt.Sprintf("consul-cli-%d", 1),
-		DataDir:       filepath.Join(te.tmpDir, fmt.Sprintf("consul-data-cli-%d", 1)),
-		JoinAddrs:     cluster.Config.JoinAddrs(),
-	})
-	if _, err := clientRunner.Start(te.ctx); err != nil {
-		t.Fatal(err)
-	}
-	cluster.group.Go(clientRunner.Wait)
-	runners = append(runners, clientRunner)
-
-	go func() {
-		if err := cluster.group.Wait(); err != nil {
-			t.Log(err)
-		}
-	}()
-	var expectedPeers []string
-	for _, ip := range ips {
-		expectedPeers = append(expectedPeers, ip+":8300")
-	}
-	if err := ConsulRunnersHealthy(te.ctx, runners, expectedPeers); err != nil {
-		t.Fatal(err)
-	}
-	return cluster, clientRunner
 }
 
+func threeNodeConsulDockerTLS(t *testing.T, te dktestenv, ca *pki.CertificateAuthority) (*ConsulClusterRunner, error) {
+	names := []string{"consul-srv-1", "consul-srv-2", "consul-srv-3", "consul-cli-1"}
+	certs := make(map[string]pki.TLSConfigPEM)
+	var ips []string
+	netip, _ := ipnet(t, te.netConf.Network.String())
+	serverIP := netip.To4()
+	for i := range names {
+		serverIP[3] = byte(i) + 51
+		ips = append(ips, serverIP.String())
+
+		tls, err := ca.ConsulServerTLS(te.ctx, serverIP.String(), "10m")
+		if err != nil {
+			t.Fatal(err)
+		}
+		certs[names[i]] = *tls
+	}
+	return BuildConsulCluster(te.ctx,
+		ConsulClusterConfigFixedIPs{
+			NetworkConfig:   te.netConf,
+			WorkDir:         te.tmpDir,
+			ServerNames:     names,
+			ConsulServerIPs: ips[:3],
+			TLS:             certs,
+		},
+		&ConsulDockerServerBuilder{
+			DockerAPI: te.docker,
+			Image:     imageConsul,
+			IPs:       ips,
+		},
+	)
+}
+
+// TestConsulDockerCluster tests a three node docker Consul cluster.
 func TestConsulDockerCluster(t *testing.T) {
 	t.Parallel()
-	testenv, cancel := testSetupDocker(t, 15*time.Second)
+	te, cancel := testSetupDocker(t, 15*time.Second)
 	defer cancel()
 
-	threeNodeConsulDocker(t, testenv)
+	if _, err := threeNodeConsulDocker(t, te); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestConsulDockerClusterTLS tests a three node docker Consul cluster with TLS.
+func TestConsulDockerClusterTLS(t *testing.T) {
+	t.Parallel()
+	te, cancel := testSetupDocker(t, 15*time.Second)
+	defer cancel()
+
+	ca := tempca(t, te.ctx, te.tmpDir)
+	if _, err := threeNodeConsulDockerTLS(t, te, ca); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestNomadDocker(t *testing.T) {
 	t.Parallel()
-	testenv, cancel := testSetupDocker(t, 15*time.Second)
+	te, cancel := testSetupDocker(t, 30*time.Second)
 	defer cancel()
-	g, ctx := errgroup.WithContext(testenv.ctx)
 
-	_, consulClientRunner := threeNodeConsulDocker(t, testenv)
-	consulAddr, err := consulClientRunner.AgentAddress()
+	consulCluster, err := threeNodeConsulDocker(t, te)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := consulCluster.Client()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	nomadRunner, _ := NewNomadDockerRunner(testenv.docker, imageNomad, "", NomadServerConfig{
+	testNomadDocker(t, te, consulCluster, NomadServerConfig{
 		BootstrapExpect: 1,
 		NomadConfig: NomadConfig{
-			NetworkConfig: testenv.NetworkConfig(),
+			NetworkConfig: te.netConf,
 			NodeName:      "nomad-test",
-			DataDir:       filepath.Join(testenv.tmpDir, "nomad-data"),
-			ConfigDir:     filepath.Join(testenv.tmpDir, "nomad-cfg"),
-			ConsulAddr:    consulAddr,
+			DataDir:       filepath.Join(te.tmpDir, "nomad-data"),
+			ConfigDir:     filepath.Join(te.tmpDir, "nomad-cfg"),
+			ConsulAddr:    fmt.Sprintf("localhost:%d", client.Config().Ports.HTTP),
 		},
 	})
+}
 
-	ip, err := nomadRunner.Start(ctx)
+func TestNomadDockerTLS(t *testing.T) {
+	t.Parallel()
+	te, cancel := testSetupDocker(t, 30*time.Second)
+	defer cancel()
+
+	ca := tempca(t, te.ctx, te.tmpDir)
+	consulCluster, err := threeNodeConsulDockerTLS(t, te, ca)
 	if err != nil {
 		t.Fatal(err)
 	}
-	g.Go(nomadRunner.Wait)
+	client, err := consulCluster.Client()
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	go func() {
-		if err := g.Wait(); err != nil {
-			t.Log(err)
-		}
-	}()
+	cert, err := ca.NomadServerTLS(te.ctx, "127.0.0.1", "10m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	testNomadDocker(t, te, consulCluster, NomadServerConfig{
+		BootstrapExpect: 1,
+		NomadConfig: NomadConfig{
+			NetworkConfig: te.netConf,
+			NodeName:      "nomad-test",
+			DataDir:       filepath.Join(te.tmpDir, "nomad-data"),
+			ConfigDir:     filepath.Join(te.tmpDir, "nomad-cfg"),
+			ConsulAddr:    fmt.Sprintf("localhost:%d", client.Config().Ports.HTTPS),
+			TLS:           *cert,
+		},
+	})
+}
+
+func testNomadDocker(t *testing.T, te dktestenv, consulCluster *ConsulClusterRunner, cfg NomadServerConfig) {
+	nomadRunner, err := NewNomadDockerRunner(te.docker, imageNomad, "", cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ip, err := nomadRunner.Start(te.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	expectedPeers := []string{fmt.Sprintf("%s:%d", ip, 4648)}
-	if err := NomadRunnersHealthy(ctx, []NomadRunner{nomadRunner}, expectedPeers); err != nil {
+	if err := NomadRunnersHealthy(te.ctx, []NomadRunner{nomadRunner}, expectedPeers); err != nil {
 		t.Fatal(err)
 	}
 }
 
+// TestConsulDockerClusterTLS tests a three node docker Consul and a three node
+// docker Nomad cluster with TLS.
 func TestNomadDockerCluster(t *testing.T) {
 	t.Parallel()
-	testenv, cancel := testSetupDocker(t, 15*time.Second)
+	te, cancel := testSetupDocker(t, 30*time.Second)
 	defer cancel()
 
-	consulCluster, _ := threeNodeConsulDocker(t, testenv)
+	consulCluster, _ := threeNodeConsulDocker(t, te)
+	ip := consulCluster.clients[0].(*ConsulDockerRunner).IP
 
-	nomadCluster, err := NewNomadClusterRunner(
-		NomadClusterConfigFixedIPs{
-			NetworkConfig: testenv.NetworkConfig(),
-			WorkDir:       testenv.tmpDir,
-			ServerNames:   []string{"nomad-srv-1", "nomad-srv-2", "nomad-srv-3"},
-			ConsulAddrs:   consulCluster.Config.APIAddrs(),
-		},
-		&NomadDockerServerBuilder{
-			DockerAPI: testenv.docker,
-			Image:     imageNomad,
-		},
-	)
+	_, err := BuildNomadCluster(te.ctx, NomadClusterConfigFixedIPs{
+		NetworkConfig: te.netConf,
+		WorkDir:       te.tmpDir,
+		ServerNames:   []string{"nomad-srv-1", "nomad-srv-2", "nomad-srv-3"},
+		ConsulAddrs:   append(consulCluster.Config.APIAddrs(), fmt.Sprintf("%s:%d", ip, DefConsulPorts(false).HTTP)),
+	}, &NomadDockerBuilder{
+		DockerAPI: te.docker,
+		Image:     imageNomad,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := nomadCluster.StartServers(testenv.ctx); err != nil {
+}
+
+func TestNomadDockerClusterTLS(t *testing.T) {
+	t.Parallel()
+	te, cancel := testSetupDocker(t, 30*time.Second)
+	defer cancel()
+
+	ca := tempca(t, te.ctx, te.tmpDir)
+	consulCluster, _ := threeNodeConsulDockerTLS(t, te, ca)
+	if _, err := threeNodeNomadDockerTLS(t, te, ca, consulCluster); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func threeNodeNomadDockerTLS(t *testing.T, te dktestenv, ca *pki.CertificateAuthority, consulCluster *ConsulClusterRunner) (*NomadClusterRunner, error) {
+	names := []string{"nomad-srv-1", "nomad-srv-2", "nomad-srv-3", "nomad-cli-1"}
+	certs := make(map[string]pki.TLSConfigPEM)
+	var ips []string
+	netip, _ := ipnet(t, te.netConf.Network.String())
+	serverIP := netip.To4()
+	for i := range names {
+		serverIP[3] = byte(i) + 61
+		ips = append(ips, serverIP.String())
+
+		tls, err := ca.NomadServerTLS(te.ctx, serverIP.String(), "10m")
+		if err != nil {
+			t.Fatal(err)
+		}
+		certs[names[i]] = *tls
 	}
 
-	if err := NomadRunnersHealthy(testenv.ctx, nomadCluster.servers, nomadCluster.NomadPeerAddrs); err != nil {
-		t.Fatal(err)
-	}
+	ip := consulCluster.clients[0].(*ConsulDockerRunner).IP
+	return BuildNomadCluster(te.ctx,
+		NomadClusterConfigFixedIPs{
+			NetworkConfig:  te.netConf,
+			WorkDir:        te.tmpDir,
+			ServerNames:    names[:3],
+			NomadServerIPs: ips,
+			ConsulAddrs:    append(consulCluster.Config.APIAddrs(), fmt.Sprintf("%s:%d", ip, DefConsulPorts(true).HTTPS)),
+			TLS:            certs,
+		},
+		&NomadDockerServerBuilder{
+			DockerAPI: te.docker,
+			Image:     imageNomad,
+			IPs:       ips,
+		},
+	)
 }

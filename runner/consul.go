@@ -26,6 +26,7 @@ type ConsulCommand interface {
 	Command() []string
 	Files() map[string]string
 	Config() ConsulConfig
+	WithDirs(config, data, log string) ConsulCommand
 }
 
 type ConsulPorts struct {
@@ -35,6 +36,16 @@ type ConsulPorts struct {
 	SerfLAN int
 	SerfWAN int
 	Server  int
+}
+
+func DefConsulPorts(tls bool) ConsulPorts {
+	cp := ConsulPorts{DNS: 8600, SerfLAN: 8301, SerfWAN: 8302, Server: 8300}
+	if tls {
+		cp.HTTPS, cp.HTTP = 8501, -1
+	} else {
+		cp.HTTPS, cp.HTTP = -1, 8500
+	}
+	return cp
 }
 
 func SeqConsulPorts(start int, tls bool) ConsulPorts {
@@ -149,9 +160,6 @@ func (cc ConsulConfig) Files() map[string]string {
 		"verify_incoming_rpc":    true,
 		"verify_outgoing":        true,
 		"verify_server_hostname": true,
-		"ports": map[string]interface{}{
-			"https": 8501,
-		},
 	}
 
 	files := map[string]string{}
@@ -184,6 +192,11 @@ func (cc ConsulConfig) Config() ConsulConfig {
 	return cc
 }
 
+func (cc ConsulConfig) WithDirs(config, data, log string) ConsulCommand {
+	cc.ConfigDir, cc.DataDir, cc.LogConfig.LogDir = config, data, log
+	return cc
+}
+
 func (cc ConsulServerConfig) Command() []string {
 	return append(cc.ConsulConfig.Command(), "-ui", "-server",
 		"-bootstrap-expect", fmt.Sprintf("%d", len(cc.JoinAddrs)))
@@ -191,4 +204,9 @@ func (cc ConsulServerConfig) Command() []string {
 
 func (cc ConsulServerConfig) Files() map[string]string {
 	return cc.ConsulConfig.Files()
+}
+
+func (cc ConsulServerConfig) WithDirs(config, data, log string) ConsulCommand {
+	cc.ConfigDir, cc.DataDir, cc.LogConfig.LogDir = config, data, log
+	return cc
 }

@@ -72,8 +72,6 @@ func (c ConsulClusterConfigSingleIP) ClientCommand() ConsulCommand {
 			// it the CA it needs to connect to the servers
 			cfg.TLS.CA = t.CA
 		}
-	} else {
-		cfg.Ports = ConsulPorts{HTTP: -1, HTTPS: 8501}
 	}
 	return cfg
 }
@@ -113,20 +111,27 @@ type ConsulClusterConfigFixedIPs struct {
 	WorkDir         string
 	ServerNames     []string
 	ConsulServerIPs []string
+	TLS             map[string]pki.TLSConfigPEM
 }
 
 var _ ConsulClusterConfig = ConsulClusterConfigFixedIPs{}
 
 func (c ConsulClusterConfigFixedIPs) ServerCommands() []ConsulCommand {
 	var commands []ConsulCommand
-	for _, name := range c.ServerNames {
+	for i := range c.ConsulServerIPs {
+		name := c.ServerNames[i]
 		command := ConsulServerConfig{
 			ConsulConfig{
-				NodeName:      name, // "consul-srv-%d", i+1
+				NodeName:      name,
 				JoinAddrs:     c.JoinAddrs(),
+				ConfigDir:     filepath.Join(c.WorkDir, name, "consul", "config"),
 				DataDir:       filepath.Join(c.WorkDir, name, "consul", "data"),
 				NetworkConfig: c.NetworkConfig,
+				Ports:         DefConsulPorts(len(c.TLS) > 0),
 			},
+		}
+		if len(c.TLS) > 0 {
+			command.TLS = c.TLS[name]
 		}
 		commands = append(commands, command)
 	}
@@ -134,7 +139,26 @@ func (c ConsulClusterConfigFixedIPs) ServerCommands() []ConsulCommand {
 }
 
 func (c ConsulClusterConfigFixedIPs) ClientCommand() ConsulCommand {
-	panic("implement me")
+	name := "consul-cli-1"
+	cfg := ConsulConfig{
+		NodeName:      name,
+		JoinAddrs:     c.JoinAddrs(),
+		ConfigDir:     filepath.Join(c.WorkDir, name, "consul", "config"),
+		DataDir:       filepath.Join(c.WorkDir, name, "consul", "data"),
+		NetworkConfig: c.NetworkConfig,
+		Ports:         DefConsulPorts(len(c.TLS) > 0),
+	}
+	if len(c.TLS) > 0 {
+		cfg.TLS = c.TLS[name]
+	}
+	if cfg.TLS.CA == "" {
+		if t := c.TLS[c.ServerNames[0]]; t.CA != "" {
+			// Even if we don't have a server cert for this client, at least give
+			// it the CA it needs to connect to the servers
+			cfg.TLS.CA = t.CA
+		}
+	}
+	return cfg
 }
 
 func (c ConsulClusterConfigFixedIPs) JoinAddrs() []string {
@@ -143,8 +167,13 @@ func (c ConsulClusterConfigFixedIPs) JoinAddrs() []string {
 
 func (c ConsulClusterConfigFixedIPs) APIAddrs() []string {
 	var addrs []string
+	ports := DefConsulPorts(len(c.TLS) > 0)
+	port := ports.HTTP
+	if len(c.TLS) > 0 {
+		port = ports.HTTPS
+	}
 	for _, ip := range c.ConsulServerIPs {
-		addrs = append(addrs, fmt.Sprintf("%s:8500", ip))
+		addrs = append(addrs, fmt.Sprintf("%s:%d", ip, port))
 	}
 	return addrs
 }
@@ -246,7 +275,7 @@ func BuildConsulCluster(ctx context.Context, clusterCfg ConsulClusterConfig, bui
 type NomadClusterConfig interface {
 	ServerCommands() []NomadCommand
 	ClientCommand() NomadCommand
-	RPCAddrs() []string
+	APIAddrs() []string
 }
 
 type NomadClusterRunner struct {
@@ -311,17 +340,26 @@ func (n NomadClusterConfigSingleIP) ClientCommand() NomadCommand {
 	return NomadClientConfig{NomadConfig: cfg}
 }
 
-func (c NomadClusterConfigSingleIP) portIncrement() int {
-	if c.PortIncrement == 0 {
+func (n NomadClusterConfigSingleIP) portIncrement() int {
+	if n.PortIncrement == 0 {
 		return 3
 	}
-	return c.PortIncrement
+	return n.PortIncrement
 }
 
-func (c NomadClusterConfigSingleIP) RPCAddrs() []string {
+func (n NomadClusterConfigSingleIP) RPCAddrs() []string {
 	var addrs []string
-	for i := range c.ServerNames {
-		port := c.FirstPorts.RPC + c.portIncrement()*i
+	for i := range n.ServerNames {
+		port := n.FirstPorts.RPC + n.portIncrement()*i
+		addrs = append(addrs, fmt.Sprintf("127.0.0.1:%d", port))
+	}
+	return addrs
+}
+
+func (n NomadClusterConfigSingleIP) APIAddrs() []string {
+	var addrs []string
+	for i := range n.ServerNames {
+		port := n.FirstPorts.HTTP + n.portIncrement()*i
 		addrs = append(addrs, fmt.Sprintf("127.0.0.1:%d", port))
 	}
 	return addrs
@@ -331,17 +369,34 @@ var _ NomadClusterConfig = NomadClusterConfigSingleIP{}
 
 type NomadClusterConfigFixedIPs struct {
 	NetworkConfig
-	WorkDir     string
-	ServerNames []string
-	ConsulAddrs []string
-}
-
-func (n NomadClusterConfigFixedIPs) RPCAddrs() []string {
-	panic("implement me")
+	WorkDir        string
+	ServerNames    []string
+	NomadServerIPs []string
+	ConsulAddrs    []string
+	TLS            map[string]pki.TLSConfigPEM
 }
 
 func (n NomadClusterConfigFixedIPs) ClientCommand() NomadCommand {
-	panic("implement me")
+	name := "nomad-cli-1"
+	cfg := NomadConfig{
+		NodeName:      name,
+		NetworkConfig: n.NetworkConfig,
+		ConfigDir:     filepath.Join(n.WorkDir, name, "nomad", "config"),
+		DataDir:       filepath.Join(n.WorkDir, name, "nomad", "data"),
+		Ports:         DefNomadPorts(),
+		ConsulAddr:    n.ConsulAddrs[3],
+	}
+	if len(n.TLS) > 0 {
+		cfg.TLS = n.TLS[name]
+	}
+	if cfg.TLS.CA == "" {
+		if t := n.TLS[n.ServerNames[0]]; t.CA != "" {
+			// Even if we don't have a server cert for this client, at least give
+			// it the CA it needs to connect to the servers
+			cfg.TLS.CA = t.CA
+		}
+	}
+	return NomadClientConfig{NomadConfig: cfg}
 }
 
 var _ NomadClusterConfig = NomadClusterConfigFixedIPs{}
@@ -357,11 +412,17 @@ func (n NomadClusterConfigFixedIPs) ServerCommands() []NomadCommand {
 				ConfigDir:     filepath.Join(n.WorkDir, name, "nomad", "config"),
 				NetworkConfig: n.NetworkConfig,
 				ConsulAddr:    n.ConsulAddrs[i],
+				Ports:         DefNomadPorts(),
+				TLS:           n.TLS[name],
 			},
 		}
 		commands = append(commands, command)
 	}
 	return commands
+}
+
+func (n NomadClusterConfigFixedIPs) APIAddrs() []string {
+	panic("implement me")
 }
 
 func NewNomadClusterRunner(config NomadClusterConfig, builder NomadRunnerBuilder) (*NomadClusterRunner, error) {
@@ -384,7 +445,7 @@ func (n *NomadClusterRunner) StartServers(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		serverAddr := fmt.Sprintf("%s:%d", ip, 4648)
+		serverAddr := fmt.Sprintf("%s:%d", ip, command.Config().Ports.RPC)
 		n.NomadPeerAddrs = append(n.NomadPeerAddrs, serverAddr)
 		n.group.Go(runner.Wait)
 		n.servers = append(n.servers, runner)
@@ -413,7 +474,7 @@ func (n *NomadClusterRunner) StartClient(ctx context.Context) error {
 func (c *NomadClusterRunner) WaitReady(ctx context.Context) error {
 	allRunners := append([]NomadRunner{}, c.servers...)
 	allRunners = append(allRunners, c.clients...)
-	return NomadRunnersHealthy(ctx, allRunners, c.Config.RPCAddrs())
+	return NomadRunnersHealthy(ctx, allRunners, c.NomadPeerAddrs)
 }
 
 func BuildNomadCluster(ctx context.Context, clusterCfg NomadClusterConfig, builder NomadRunnerBuilder) (*NomadClusterRunner, error) {

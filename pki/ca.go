@@ -216,7 +216,7 @@ func (ca *CertificateAuthority) serverTLS(ctx context.Context, role, cn, ip, ttl
 }
 
 func (ca *CertificateAuthority) ConsulServerTLS(ctx context.Context, ip, ttl string) (*TLSConfigPEM, error) {
-	return ca.serverTLS(ctx, "consul-server", "server.dc1.consul", ip, ttl)
+	return ca.serverTLS(ctx, "consul-server", "server.dc1.consul", ip+",127.0.0.1", ttl)
 }
 
 func (ca *CertificateAuthority) NomadServerTLS(ctx context.Context, ip, ttl string) (*TLSConfigPEM, error) {

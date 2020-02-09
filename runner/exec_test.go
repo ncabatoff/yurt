@@ -92,6 +92,7 @@ func tempca(t *testing.T, ctx context.Context, tmpdir string) *pki.CertificateAu
 	return ca
 }
 
+// TestConsulExec tests a single node exec Consul cluster.
 func TestConsulExec(t *testing.T) {
 	t.Parallel()
 	te := newtestenv(t, 30*time.Second)
@@ -107,6 +108,7 @@ func TestConsulExec(t *testing.T) {
 	})
 }
 
+// TestConsulExec tests a single node exec Consul cluster with TLS.
 func TestConsulExecTLS(t *testing.T) {
 	t.Parallel()
 	te := newtestenv(t, 30*time.Second)
@@ -176,6 +178,7 @@ func threeNodeConsulExecTLS(t *testing.T, te testenv, ca *pki.CertificateAuthori
 		}, &ConsulExecBuilder{te.consulPath})
 }
 
+// TestConsulExecCluster tests running a 3-node exec Consul cluster without TLS.
 func TestConsulExecCluster(t *testing.T) {
 	t.Parallel()
 	te := newtestenv(t, 30*time.Second)
@@ -185,6 +188,7 @@ func TestConsulExecCluster(t *testing.T) {
 	}
 }
 
+// TestConsulExecCluster tests running a 3-node exec Consul cluster with TLS.
 func TestConsulExecClusterTLS(t *testing.T) {
 	t.Parallel()
 	te := newtestenv(t, 30*time.Second)
@@ -195,7 +199,8 @@ func TestConsulExecClusterTLS(t *testing.T) {
 	}
 }
 
-// TestNomadExec tests a single node Nomad cluster talking to a single node Consul cluster.
+// TestNomadExec tests a single node exec Nomad cluster talking to a single node
+// exec Consul cluster, without TLS.
 func TestNomadExec(t *testing.T) {
 	t.Parallel()
 	te := newtestenv(t, 30*time.Second)
@@ -219,8 +224,7 @@ func TestNomadExec(t *testing.T) {
 }
 
 // TestNomadExecTLS tests a single node Nomad cluster talking to a single node
-// Consul cluster.  A TLS server cert is generated for each of the Nomad and
-// Cluster servers, and their API listeners only accept HTTPS.
+// Consul cluster, with TLS.
 func TestNomadExecTLS(t *testing.T) {
 	t.Parallel()
 	te := newtestenv(t, 30*time.Second)
@@ -269,6 +273,8 @@ func testNomadExec(t *testing.T, te testenv, cfg NomadServerConfig) {
 	}
 }
 
+// TestNomadExecCluster tests a three node exec Nomad cluster talking to a
+// three node exec Consul cluster.
 func TestNomadExecCluster(t *testing.T) {
 	t.Parallel()
 	te := newtestenv(t, 30*time.Second)
@@ -277,14 +283,19 @@ func TestNomadExecCluster(t *testing.T) {
 	consulCluster, _ := threeNodeConsulExecNoTLS(t, te)
 	clientPorts := consulCluster.clients[0].Config().Ports
 
-	testNomadExecCluster(t, te, NomadClusterConfigSingleIP{
+	_, err := BuildNomadCluster(te.ctx, NomadClusterConfigSingleIP{
 		WorkDir:     filepath.Join(te.tmpDir, "nomad"),
 		ServerNames: []string{"nomad-srv-1", "nomad-srv-2", "nomad-srv-3"},
 		FirstPorts:  nextNomadBatch(4),
 		ConsulAddrs: append(consulCluster.Config.APIAddrs(), fmt.Sprintf("localhost:%d", clientPorts.HTTP)),
-	})
+	}, &NomadExecBuilder{te.nomadPath})
+	if err != nil {
+		t.Fatal(err)
+	}
 }
 
+// TestNomadExecClusterTLS tests a three node exec Nomad cluster talking to a
+// three node exec Consul cluster, with TLS.
 func TestNomadExecClusterTLS(t *testing.T) {
 	t.Parallel()
 	names := []string{"nomad-srv-1", "nomad-srv-2", "nomad-srv-3", "nomad-cli-1"}
@@ -307,17 +318,13 @@ func TestNomadExecClusterTLS(t *testing.T) {
 		certs[names[i]] = *tls
 	}
 
-	testNomadExecCluster(t, te, NomadClusterConfigSingleIP{
+	_, err = BuildNomadCluster(te.ctx, NomadClusterConfigSingleIP{
 		WorkDir:     filepath.Join(te.tmpDir, "nomad"),
 		ServerNames: names[:3],
 		FirstPorts:  nextNomadBatch(4),
 		ConsulAddrs: append(consulCluster.Config.APIAddrs(), fmt.Sprintf("localhost:%d", clientPorts.HTTPS)),
 		TLS:         certs,
-	})
-}
-
-func testNomadExecCluster(t *testing.T, te testenv, serverCfg NomadClusterConfigSingleIP) {
-	_, err := BuildNomadCluster(te.ctx, serverCfg, &NomadExecBuilder{te.nomadPath})
+	}, &NomadExecBuilder{te.nomadPath})
 	if err != nil {
 		t.Fatal(err)
 	}

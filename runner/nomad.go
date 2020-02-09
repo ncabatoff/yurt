@@ -33,6 +33,10 @@ type NomadPorts struct {
 	RPC  int
 }
 
+func DefNomadPorts() NomadPorts {
+	return NomadPorts{HTTP: 4646, Serf: 4647, RPC: 4648}
+}
+
 func SeqNomadPorts(start int) NomadPorts {
 	return NomadPorts{HTTP: start, Serf: start + 1, RPC: start + 2}
 }
@@ -165,6 +169,7 @@ ports {
   rpc = %d
 }
 `, network, network, network, portHTTP, portSerf, portRPC)
+
 	return files
 }
 
@@ -184,4 +189,22 @@ func (nc NomadServerConfig) WithDirs(config, data, log string) NomadCommand {
 
 func (nc NomadClientConfig) Command() []string {
 	return append(nc.NomadConfig.Command(), "-client")
+}
+
+func (nc NomadClientConfig) Files() map[string]string {
+	files := nc.NomadConfig.Files()
+	// Disable Java so I don't get popups on my MacOS machine about installing it.
+	files["client.hcl"] = `
+client {
+  options = {
+    "driver.blacklist" = "java"
+  }
+}
+`
+	return files
+}
+
+func (nc NomadClientConfig) WithDirs(config, data, log string) NomadCommand {
+	nc.ConfigDir, nc.DataDir, nc.LogConfig.LogDir = config, data, log
+	return nc
 }

@@ -9,12 +9,14 @@ import (
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
+	"github.com/docker/go-connections/nat"
 	consulapi "github.com/hashicorp/consul/api"
 	nomadapi "github.com/hashicorp/nomad/api"
 	"go.uber.org/atomic"
 	"io/ioutil"
 	"net"
 	"os"
+	"path/filepath"
 )
 
 type ConsulDockerRunner struct {
@@ -51,15 +53,57 @@ func (c *ConsulDockerRunner) Start(ctx context.Context) (net.IP, error) {
 	}
 
 	consulConfig := c.ConsulCommand.Config()
+	localConfigDir, localDataDir := consulConfig.ConfigDir, consulConfig.DataDir
+	for _, dir := range []string{localConfigDir, localDataDir} {
+		if dir == "" {
+			continue
+		}
+		err := os.MkdirAll(dir, 0755)
+		if err != nil {
+			return nil, err
+		}
+	}
+	for name, contents := range consulConfig.Files() {
+		if err := writeConfig(consulConfig.ConfigDir, name, contents); err != nil {
+			return nil, err
+		}
+	}
+	exposedPorts := nat.PortSet{
+		"8300/tcp": {},
+		"8301/tcp": {},
+		"8301/udp": {},
+		"8302/tcp": {},
+		"8302/udp": {},
+		"8500/tcp": {},
+		"8501/tcp": {},
+		"8600/tcp": {},
+		"8600/udp": {},
+	}
+
 	dr := &dockerRunner{
 		DockerAPI: c.DockerAPI,
 		netName:   consulConfig.NetworkConfig.DockerNetName,
 		cfg: &container.Config{
 			Image: c.Image,
-			Cmd:   c.ConsulCommand.Command(),
+			Cmd:   c.ConsulCommand.WithDirs("/consul/config", "/consul/data", "").Command(),
 			Env:   []string{"CONSUL_DISABLE_PERM_MGMT=1"},
 			Labels: map[string]string{
 				"yurt": "true",
+			},
+			ExposedPorts: exposedPorts,
+			WorkingDir:   "/consul/config",
+		},
+		mounts: []mount.Mount{
+			{
+				Type:     mount.TypeBind,
+				Source:   localConfigDir,
+				Target:   "/consul/config",
+				ReadOnly: true,
+			},
+			{
+				Type:   mount.TypeBind,
+				Source: localDataDir,
+				Target: "/consul/data",
 			},
 		},
 		containerName: consulConfig.NodeName,
@@ -111,11 +155,20 @@ func (c ConsulDockerRunner) Stop() error {
 
 func (c *ConsulDockerRunner) ConsulAPI() (*consulapi.Client, error) {
 	apiConfig := consulapi.DefaultNonPooledConfig()
-	apiConfig.Scheme = "http"
+	var port int
+	switch {
+	case c.Config().Ports.HTTP > 0:
+		apiConfig.Scheme = "http"
+		port = c.Config().Ports.HTTP
+	case c.Config().Ports.HTTPS > 0:
+		apiConfig.Scheme = "https"
+		port = c.Config().Ports.HTTPS
+		apiConfig.TLSConfig.CAFile = filepath.Join(c.Config().ConfigDir, "ca.pem")
+	}
 
-	ports := c.container.NetworkSettings.NetworkSettingsBase.Ports["8500/tcp"]
+	ports := c.container.NetworkSettings.NetworkSettingsBase.Ports[nat.Port(fmt.Sprintf("%d/tcp", port))]
 	if len(ports) == 0 {
-		return nil, fmt.Errorf("no binding for Consul API port")
+		return nil, fmt.Errorf("no binding for Consul API port %d", port)
 	}
 
 	apiConfig.Address = fmt.Sprintf("%s:%s", "127.0.0.1", ports[0].HostPort)
@@ -300,7 +353,6 @@ func cleanupContainer(ctx context.Context, cli *client.Client, containerID strin
 type NomadDockerRunner struct {
 	NomadCommand NomadCommand
 	Image        string
-	NetName      string
 	IP           net.IP
 	DockerAPI    *client.Client
 	container    *types.ContainerJSON
@@ -313,14 +365,24 @@ func (n *NomadDockerRunner) Config() NomadConfig {
 
 func (n *NomadDockerRunner) NomadAPI() (*nomadapi.Client, error) {
 	apiConfig := nomadapi.DefaultConfig()
-	//apiConfig.Scheme = "http"
 
-	ports := n.container.NetworkSettings.NetworkSettingsBase.Ports["4646/tcp"]
+	scheme, port := "http", 4646
+	port = n.Config().Ports.HTTP
+	if port <= 0 {
+		port = 4646
+	}
+
+	ports := n.container.NetworkSettings.NetworkSettingsBase.Ports[nat.Port(fmt.Sprintf("%d/tcp", port))]
 	if len(ports) == 0 {
 		return nil, fmt.Errorf("no binding for Nomad API port")
 	}
 
-	apiConfig.Address = fmt.Sprintf("http://%s:%s", "127.0.0.1", ports[0].HostPort)
+	if ca := n.Config().TLS.CA; len(ca) > 0 {
+		scheme = "https"
+		apiConfig.TLSConfig.CACert = filepath.Join(n.Config().ConfigDir, "ca.pem")
+	}
+
+	apiConfig.Address = fmt.Sprintf("%s://%s:%s", scheme, "127.0.0.1", ports[0].HostPort)
 	return nomadapi.NewClient(apiConfig)
 }
 
@@ -365,6 +427,7 @@ func (n *NomadDockerRunner) Start(ctx context.Context) (net.IP, error) {
 			Labels: map[string]string{
 				"yurt": "true",
 			},
+			WorkingDir: "/nomad/config",
 		},
 		mounts: []mount.Mount{
 			{
@@ -391,6 +454,9 @@ func (n *NomadDockerRunner) Start(ctx context.Context) (net.IP, error) {
 	}
 	n.container = cont
 	n.cancel = cancel
+	go func() {
+		_ = containerLogs(ctx, n.DockerAPI, *n.container)
+	}()
 	go func() {
 		<-ctx.Done()
 		_ = cleanupContainer(context.Background(), n.DockerAPI, cont.ID)
@@ -421,10 +487,13 @@ func (c *NomadDockerBuilder) MakeNomadRunner(command NomadCommand) (NomadRunner,
 type NomadDockerServerBuilder struct {
 	DockerAPI *client.Client
 	Image     string
+	IPs       []string
+	i         atomic.Uint32
 }
 
 var _ NomadRunnerBuilder = (*NomadDockerServerBuilder)(nil)
 
 func (c *NomadDockerServerBuilder) MakeNomadRunner(command NomadCommand) (NomadRunner, error) {
-	return NewNomadDockerRunner(c.DockerAPI, c.Image, "", command)
+	ip := c.IPs[c.i.Inc()-1]
+	return NewNomadDockerRunner(c.DockerAPI, c.Image, ip, command)
 }
