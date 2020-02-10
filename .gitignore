@@ -1,5 +1,4 @@
 .idea
 work
-runner/download
-pki/download
+download
 cmd/yurt-cluster/yurt-cluster

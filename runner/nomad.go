@@ -20,6 +20,7 @@ type NomadRunner interface {
 	Runner
 	Config() NomadConfig
 	NomadAPI() (*nomadapi.Client, error)
+	NomadAPIConfig() (*nomadapi.Config, error)
 }
 
 // NomadRunnerBuilder is a factory used by clusters to create nodes.

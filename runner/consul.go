@@ -14,6 +14,7 @@ type ConsulRunner interface {
 	// TODO replace this with access to only port info?
 	Config() ConsulConfig
 	ConsulAPI() (*api.Client, error)
+	ConsulAPIConfig() (*api.Config, error)
 }
 
 // ConsulRunnerBuilder is a factory used by clusters to create nodes.

@@ -154,6 +154,14 @@ func (c ConsulDockerRunner) Stop() error {
 }
 
 func (c *ConsulDockerRunner) ConsulAPI() (*consulapi.Client, error) {
+	apiCfg, err := c.ConsulAPIConfig()
+	if err != nil {
+		return nil, err
+	}
+	return consulapi.NewClient(apiCfg)
+}
+
+func (c *ConsulDockerRunner) ConsulAPIConfig() (*consulapi.Config, error) {
 	apiConfig := consulapi.DefaultNonPooledConfig()
 	var port int
 	switch {
@@ -172,7 +180,7 @@ func (c *ConsulDockerRunner) ConsulAPI() (*consulapi.Client, error) {
 	}
 
 	apiConfig.Address = fmt.Sprintf("%s:%s", "127.0.0.1", ports[0].HostPort)
-	return consulapi.NewClient(apiConfig)
+	return apiConfig, nil
 }
 
 func getIP(cont types.ContainerJSON, netName string) (net.IP, error) {
@@ -296,49 +304,6 @@ func dockerWait(api *client.Client, containerID string) error {
 	return nil
 }
 
-func setupNetwork(ctx context.Context, cli *client.Client, netName, cidr string) (string, error) {
-	netResources, err := cli.NetworkList(ctx, types.NetworkListOptions{})
-	if err != nil {
-		return "", err
-	}
-	for _, netRes := range netResources {
-		if netRes.Name == netName {
-			if len(netRes.IPAM.Config) > 0 && netRes.IPAM.Config[0].Subnet == cidr {
-				return netRes.ID, nil
-			}
-			_ = cli.NetworkRemove(ctx, netRes.ID)
-		}
-	}
-
-	id, err := createNetwork(ctx, cli, netName, cidr)
-	if err != nil {
-		return "", err
-	}
-	return id, nil
-}
-
-func createNetwork(ctx context.Context, cli *client.Client, netName, cidr string) (string, error) {
-	resp, err := cli.NetworkCreate(ctx, netName, types.NetworkCreate{
-		CheckDuplicate: true,
-		Driver:         "bridge",
-		Options:        map[string]string{},
-		IPAM: &network.IPAM{
-			Driver:  "default",
-			Options: map[string]string{},
-			Config: []network.IPAMConfig{
-				{
-					Subnet: cidr,
-				},
-			},
-		},
-	})
-	if err != nil {
-		return "", err
-	}
-
-	return resp.ID, nil
-}
-
 func cleanupContainer(ctx context.Context, cli *client.Client, containerID string) error {
 	err := cli.ContainerStop(ctx, containerID, nil)
 	if err != nil {
@@ -364,6 +329,14 @@ func (n *NomadDockerRunner) Config() NomadConfig {
 }
 
 func (n *NomadDockerRunner) NomadAPI() (*nomadapi.Client, error) {
+	apiCfg, err := n.NomadAPIConfig()
+	if err != nil {
+		return nil, err
+	}
+	return nomadapi.NewClient(apiCfg)
+}
+
+func (n *NomadDockerRunner) NomadAPIConfig() (*nomadapi.Config, error) {
 	apiConfig := nomadapi.DefaultConfig()
 
 	scheme, port := "http", 4646
@@ -383,7 +356,7 @@ func (n *NomadDockerRunner) NomadAPI() (*nomadapi.Client, error) {
 	}
 
 	apiConfig.Address = fmt.Sprintf("%s://%s:%s", scheme, "127.0.0.1", ports[0].HostPort)
-	return nomadapi.NewClient(apiConfig)
+	return apiConfig, nil
 }
 
 var _ NomadRunner = (*NomadDockerRunner)(nil)

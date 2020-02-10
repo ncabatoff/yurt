@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/hashicorp/go-sockaddr"
+	"github.com/ncabatoff/yurt/docker"
 	"github.com/ncabatoff/yurt/pki"
 	"math/rand"
 	"net"
@@ -41,7 +42,7 @@ func testSetupDocker(t *testing.T, timeout time.Duration) (dktestenv, func()) {
 
 	tmpDir, ctx, cleanup := testSetup(t, timeout)
 	cidr := fmt.Sprintf("10.%d.%d.0/24", rand.Int31n(255), rand.Int31n(255))
-	_, err = setupNetwork(ctx, cli, t.Name(), cidr)
+	_, err = docker.SetupNetwork(ctx, cli, t.Name(), cidr)
 	if err != nil {
 		t.Fatal(err)
 	}

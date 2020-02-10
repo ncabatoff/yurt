@@ -73,6 +73,16 @@ func (cer *ConsulExecRunner) Start(ctx context.Context) (net.IP, error) {
 }
 
 func (cer *ConsulExecRunner) ConsulAPI() (*consulapi.Client, error) {
+	apiCfg, err := cer.ConsulAPIConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	return consulapi.NewClient(apiCfg)
+
+}
+
+func (cer *ConsulExecRunner) ConsulAPIConfig() (*consulapi.Config, error) {
 	apiConfig := consulapi.DefaultNonPooledConfig()
 
 	// TODO there's no reason we have to limit exec runners to using localhost.
@@ -87,7 +97,7 @@ func (cer *ConsulExecRunner) ConsulAPI() (*consulapi.Client, error) {
 		apiConfig.TLSConfig.CAFile = filepath.Join(cer.Config().ConfigDir, "ca.pem")
 	}
 
-	return consulapi.NewClient(apiConfig)
+	return apiConfig, nil
 }
 
 func (cer *ConsulExecRunner) Wait() error {
@@ -186,6 +196,15 @@ func (ner *NomadExecRunner) Start(ctx context.Context) (net.IP, error) {
 }
 
 func (ner *NomadExecRunner) NomadAPI() (*nomadapi.Client, error) {
+	apiCfg, err := ner.NomadAPIConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	return nomadapi.NewClient(apiCfg)
+}
+
+func (ner *NomadExecRunner) NomadAPIConfig() (*nomadapi.Config, error) {
 	apiConfig := nomadapi.DefaultConfig()
 
 	scheme, port := "http", 4646
@@ -200,7 +219,7 @@ func (ner *NomadExecRunner) NomadAPI() (*nomadapi.Client, error) {
 	}
 	apiConfig.Address = fmt.Sprintf("%s://%s:%d", scheme, "127.0.0.1", port)
 
-	return nomadapi.NewClient(apiConfig)
+	return apiConfig, nil
 }
 
 func (ner *NomadExecRunner) Wait() error {

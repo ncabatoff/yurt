@@ -23,6 +23,7 @@ require (
 	github.com/skratchdot/open-golang v0.0.0-20200116055534-eef842397966
 	github.com/stretchr/testify v1.4.0 // indirect
 	go.uber.org/atomic v1.5.1
+	golang.org/x/exp v0.0.0-20190510132918-efd6b22b2522
 	golang.org/x/sync v0.0.0-20190423024810-112230192c58
 	golang.org/x/sys v0.0.0-20190801041406-cbf593c0f2f3 // indirect
 	gopkg.in/yaml.v2 v2.2.2

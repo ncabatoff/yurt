@@ -3,6 +3,8 @@ package runner
 import (
 	"context"
 	"fmt"
+	consulapi "github.com/hashicorp/consul/api"
+	nomadapi "github.com/hashicorp/nomad/api"
 	"github.com/ncabatoff/yurt/pki"
 	"golang.org/x/sync/errgroup"
 	"path/filepath"
@@ -195,6 +197,9 @@ type ConsulClusterRunner struct {
 }
 
 func NewConsulClusterRunner(config ConsulClusterConfig, builder ConsulRunnerBuilder) (*ConsulClusterRunner, error) {
+	if len(config.ServerCommands()) == 0 {
+		return nil, fmt.Errorf("no server commands defined")
+	}
 	return &ConsulClusterRunner{
 		Config:  config,
 		Builder: builder,
@@ -254,6 +259,18 @@ func (c *ConsulClusterRunner) WaitExit() error {
 	return c.group.Wait()
 }
 
+func (c *ConsulClusterRunner) APIConfigs() ([]*consulapi.Config, error) {
+	var ret []*consulapi.Config
+	for _, runner := range c.servers {
+		apiCfg, err := runner.ConsulAPIConfig()
+		if err != nil {
+			return nil, err
+		}
+		ret = append(ret, apiCfg)
+	}
+	return ret, nil
+}
+
 func BuildConsulCluster(ctx context.Context, clusterCfg ConsulClusterConfig, builder ConsulRunnerBuilder) (*ConsulClusterRunner, error) {
 	consulCluster, err := NewConsulClusterRunner(clusterCfg, builder)
 	if err != nil {
@@ -275,7 +292,6 @@ func BuildConsulCluster(ctx context.Context, clusterCfg ConsulClusterConfig, bui
 type NomadClusterConfig interface {
 	ServerCommands() []NomadCommand
 	ClientCommand() NomadCommand
-	APIAddrs() []string
 }
 
 type NomadClusterRunner struct {
@@ -356,15 +372,6 @@ func (n NomadClusterConfigSingleIP) RPCAddrs() []string {
 	return addrs
 }
 
-func (n NomadClusterConfigSingleIP) APIAddrs() []string {
-	var addrs []string
-	for i := range n.ServerNames {
-		port := n.FirstPorts.HTTP + n.portIncrement()*i
-		addrs = append(addrs, fmt.Sprintf("127.0.0.1:%d", port))
-	}
-	return addrs
-}
-
 var _ NomadClusterConfig = NomadClusterConfigSingleIP{}
 
 type NomadClusterConfigFixedIPs struct {
@@ -421,10 +428,6 @@ func (n NomadClusterConfigFixedIPs) ServerCommands() []NomadCommand {
 	return commands
 }
 
-func (n NomadClusterConfigFixedIPs) APIAddrs() []string {
-	panic("implement me")
-}
-
 func NewNomadClusterRunner(config NomadClusterConfig, builder NomadRunnerBuilder) (*NomadClusterRunner, error) {
 	return &NomadClusterRunner{
 		Config:  config,
@@ -471,10 +474,22 @@ func (n *NomadClusterRunner) StartClient(ctx context.Context) error {
 	return nil
 }
 
-func (c *NomadClusterRunner) WaitReady(ctx context.Context) error {
-	allRunners := append([]NomadRunner{}, c.servers...)
-	allRunners = append(allRunners, c.clients...)
-	return NomadRunnersHealthy(ctx, allRunners, c.NomadPeerAddrs)
+func (n *NomadClusterRunner) WaitReady(ctx context.Context) error {
+	allRunners := append([]NomadRunner{}, n.servers...)
+	allRunners = append(allRunners, n.clients...)
+	return NomadRunnersHealthy(ctx, allRunners, n.NomadPeerAddrs)
+}
+
+func (n *NomadClusterRunner) APIConfigs() ([]*nomadapi.Config, error) {
+	var ret []*nomadapi.Config
+	for _, runner := range n.servers {
+		apiCfg, err := runner.NomadAPIConfig()
+		if err != nil {
+			return nil, err
+		}
+		ret = append(ret, apiCfg)
+	}
+	return ret, nil
 }
 
 func BuildNomadCluster(ctx context.Context, clusterCfg NomadClusterConfig, builder NomadRunnerBuilder) (*NomadClusterRunner, error) {
