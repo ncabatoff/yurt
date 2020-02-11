@@ -87,6 +87,7 @@ func testConsulDockerTLS(t *testing.T, te dktestenv, ca *pki.CertificateAuthorit
 func testConsulDocker(t *testing.T, te dktestenv, cfg ConsulServerConfig) {
 	cfg.ConfigDir = filepath.Join(te.tmpDir, "consul/config")
 	cfg.DataDir = filepath.Join(te.tmpDir, "consul/data")
+	cfg.LogConfig.LogDir = filepath.Join(te.tmpDir, "consul/log")
 	runner, _ := NewConsulDockerRunner(te.docker, imageConsul, "", cfg)
 
 	ip, err := runner.Start(te.ctx)
@@ -103,8 +104,8 @@ func testConsulDocker(t *testing.T, te dktestenv, cfg ConsulServerConfig) {
 // TestConsulDocker tests a single node docker Consul cluster.
 func TestConsulDocker(t *testing.T) {
 	t.Parallel()
-	te, cancel := testSetupDocker(t, 15*time.Second)
-	defer cancel()
+	te, _ := testSetupDocker(t, 15*time.Second)
+	defer cleanup()
 
 	testConsulDocker(t, te, ConsulServerConfig{ConsulConfig: ConsulConfig{
 		NetworkConfig: te.netConf,
@@ -117,8 +118,8 @@ func TestConsulDocker(t *testing.T) {
 // TestConsulDockerTLS tests a single node docker Consul cluster with TLS.
 func TestConsulDockerTLS(t *testing.T) {
 	t.Parallel()
-	te, cancel := testSetupDocker(t, 15*time.Second)
-	defer cancel()
+	te, cleanup := testSetupDocker(t, 15*time.Second)
+	defer cleanup()
 
 	ca := tempca(t, te.ctx, te.tmpDir)
 	testConsulDockerTLS(t, te, ca, ConsulServerConfig{ConsulConfig: ConsulConfig{
@@ -188,8 +189,8 @@ func threeNodeConsulDockerTLS(t *testing.T, te dktestenv, ca *pki.CertificateAut
 // TestConsulDockerCluster tests a three node docker Consul cluster.
 func TestConsulDockerCluster(t *testing.T) {
 	t.Parallel()
-	te, cancel := testSetupDocker(t, 15*time.Second)
-	defer cancel()
+	te, cleanup := testSetupDocker(t, 15*time.Second)
+	defer cleanup()
 
 	if _, err := threeNodeConsulDocker(t, te); err != nil {
 		t.Fatal(err)
@@ -199,8 +200,8 @@ func TestConsulDockerCluster(t *testing.T) {
 // TestConsulDockerClusterTLS tests a three node docker Consul cluster with TLS.
 func TestConsulDockerClusterTLS(t *testing.T) {
 	t.Parallel()
-	te, cancel := testSetupDocker(t, 15*time.Second)
-	defer cancel()
+	te, cleanup := testSetupDocker(t, 15*time.Second)
+	defer cleanup()
 
 	ca := tempca(t, te.ctx, te.tmpDir)
 	if _, err := threeNodeConsulDockerTLS(t, te, ca); err != nil {
@@ -210,8 +211,8 @@ func TestConsulDockerClusterTLS(t *testing.T) {
 
 func TestNomadDocker(t *testing.T) {
 	t.Parallel()
-	te, cancel := testSetupDocker(t, 30*time.Second)
-	defer cancel()
+	te, cleanup := testSetupDocker(t, 30*time.Second)
+	defer cleanup()
 
 	consulCluster, err := threeNodeConsulDocker(t, te)
 	if err != nil {
@@ -229,15 +230,18 @@ func TestNomadDocker(t *testing.T) {
 			NodeName:      "nomad-test",
 			DataDir:       filepath.Join(te.tmpDir, "nomad-data"),
 			ConfigDir:     filepath.Join(te.tmpDir, "nomad-cfg"),
-			ConsulAddr:    fmt.Sprintf("localhost:%d", client.Config().Ports.HTTP),
+			LogConfig: LogConfig{
+				LogDir: filepath.Join(te.tmpDir, "nomad", "log"),
+			},
+			ConsulAddr: fmt.Sprintf("localhost:%d", client.Config().Ports.HTTP),
 		},
 	})
 }
 
 func TestNomadDockerTLS(t *testing.T) {
 	t.Parallel()
-	te, cancel := testSetupDocker(t, 30*time.Second)
-	defer cancel()
+	te, cleanup := testSetupDocker(t, 30*time.Second)
+	defer cleanup()
 
 	ca := tempca(t, te.ctx, te.tmpDir)
 	consulCluster, err := threeNodeConsulDockerTLS(t, te, ca)
@@ -260,8 +264,11 @@ func TestNomadDockerTLS(t *testing.T) {
 			NodeName:      "nomad-test",
 			DataDir:       filepath.Join(te.tmpDir, "nomad-data"),
 			ConfigDir:     filepath.Join(te.tmpDir, "nomad-cfg"),
-			ConsulAddr:    fmt.Sprintf("localhost:%d", client.Config().Ports.HTTPS),
-			TLS:           *cert,
+			LogConfig: LogConfig{
+				LogDir: filepath.Join(te.tmpDir, "nomad", "log"),
+			},
+			ConsulAddr: fmt.Sprintf("localhost:%d", client.Config().Ports.HTTPS),
+			TLS:        *cert,
 		},
 	})
 }
@@ -287,8 +294,8 @@ func testNomadDocker(t *testing.T, te dktestenv, consulCluster *ConsulClusterRun
 // docker Nomad cluster with TLS.
 func TestNomadDockerCluster(t *testing.T) {
 	t.Parallel()
-	te, cancel := testSetupDocker(t, 30*time.Second)
-	defer cancel()
+	te, cleanup := testSetupDocker(t, 30*time.Second)
+	defer cleanup()
 
 	consulCluster, _ := threeNodeConsulDocker(t, te)
 	ip := consulCluster.clients[0].(*ConsulDockerRunner).IP
@@ -309,8 +316,8 @@ func TestNomadDockerCluster(t *testing.T) {
 
 func TestNomadDockerClusterTLS(t *testing.T) {
 	t.Parallel()
-	te, cancel := testSetupDocker(t, 30*time.Second)
-	defer cancel()
+	te, cleanup := testSetupDocker(t, 30*time.Second)
+	defer cleanup()
 
 	ca := tempca(t, te.ctx, te.tmpDir)
 	consulCluster, _ := threeNodeConsulDockerTLS(t, te, ca)

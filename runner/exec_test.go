@@ -71,7 +71,7 @@ func newtestenv(t *testing.T, timeout time.Duration) testenv {
 				// TODO must this be a goroutine? Would like to be able to use a
 				// goroutine leak detector without it being noisy
 				if err := g.Wait(); err != nil {
-					t.Log(err)
+					t.Logf("exit with error: %v", err)
 				}
 			}()
 			_ = os.RemoveAll(tmpDir)
@@ -135,15 +135,19 @@ func testConsulExecTLS(t *testing.T, te testenv, ca *pki.CertificateAuthority, c
 func testConsulExec(t *testing.T, te testenv, cfg ConsulServerConfig) {
 	cfg.ConfigDir = filepath.Join(te.tmpDir, "consul/config")
 	cfg.DataDir = filepath.Join(te.tmpDir, "consul/data")
+	cfg.LogConfig.LogDir = filepath.Join(te.tmpDir, "consul/log")
 	runner, _ := NewConsulExecRunner(te.consulPath, cfg)
+	expectedPeerAddrs := []string{fmt.Sprintf("127.0.0.1:%d", cfg.Ports.Server)}
+	if err := ConsulRunnersHealthyNow([]ConsulRunner{runner}, expectedPeerAddrs); err == nil {
+		t.Fatal("API healthy before process starts - is there an orphan from a previous test running?")
+	}
 
-	ip, err := runner.Start(te.ctx)
+	_, err := runner.Start(te.ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	te.group.Go(runner.Wait)
 
-	expectedPeerAddrs := []string{fmt.Sprintf("%s:%d", ip, cfg.Ports.Server)}
 	if err := ConsulRunnersHealthy(te.ctx, []ConsulRunner{runner}, expectedPeerAddrs); err != nil {
 		t.Fatal(err)
 	}
@@ -259,6 +263,7 @@ func testNomadExecTLS(t *testing.T, te testenv, ca *pki.CertificateAuthority, cf
 func testNomadExec(t *testing.T, te testenv, cfg NomadServerConfig) {
 	cfg.ConfigDir = filepath.Join(te.tmpDir, "nomad/config")
 	cfg.DataDir = filepath.Join(te.tmpDir, "nomad/data")
+	cfg.LogConfig = LogConfig{LogDir: filepath.Join(te.tmpDir, "nomad/log")}
 	runner, _ := NewNomadExecRunner(te.nomadPath, cfg)
 
 	ip, err := runner.Start(te.ctx)

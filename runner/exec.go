@@ -8,7 +8,6 @@ import (
 	"github.com/hashicorp/vault/sdk/helper/certutil"
 	"github.com/ncabatoff/yurt/util"
 	"io/ioutil"
-	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -40,9 +39,9 @@ func (cer *ConsulExecRunner) Start(ctx context.Context) (net.IP, error) {
 	}
 
 	args := cer.Command()
-	log.Print(cer.BinPath, args)
+	//log.Print(cer.BinPath, args)
 
-	for _, dir := range []string{cer.Config().ConfigDir, cer.Config().DataDir} {
+	for _, dir := range []string{cer.Config().ConfigDir, cer.Config().DataDir, cer.Config().LogConfig.LogDir} {
 		if dir == "" {
 			continue
 		}
@@ -60,7 +59,7 @@ func (cer *ConsulExecRunner) Start(ctx context.Context) (net.IP, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(ctx, cer.BinPath, args...)
 	cmd.Dir = cer.Config().ConfigDir
-	cmd.Stdout = util.NewOutputWriter(cer.Config().NodeName, os.Stdout)
+	//cmd.Stdout = util.NewOutputWriter(cer.Config().NodeName, os.Stdout)
 	cmd.Stderr = util.NewOutputWriter(cer.Config().NodeName, os.Stderr)
 
 	if err := cmd.Start(); err != nil {
@@ -147,11 +146,11 @@ func writeConfig(dir, name, contents string) error {
 		}
 		cert := bundle.Certificate
 		if cert != nil {
-			log.Printf("%s: Issuer=%s Subject=%s DNS=%v IP=%v\n", path,
-				cert.Issuer, cert.Subject, cert.DNSNames, cert.IPAddresses)
+			//log.Printf("%s: Issuer=%s Subject=%s DNS=%v IP=%v\n", path,
+			//	cert.Issuer, cert.Subject, cert.DNSNames, cert.IPAddresses)
 		}
 	} else {
-		log.Print(path, contents)
+		//log.Print(path, contents)
 	}
 	return ioutil.WriteFile(path, []byte(contents), 0600)
 }
@@ -162,9 +161,9 @@ func (ner *NomadExecRunner) Start(ctx context.Context) (net.IP, error) {
 	}
 
 	args := ner.Command()
-	log.Print(ner.BinPath, args)
+	//log.Print(ner.BinPath, args)
 
-	for _, dir := range []string{ner.Config().ConfigDir, ner.Config().DataDir} {
+	for _, dir := range []string{ner.Config().ConfigDir, ner.Config().DataDir, ner.Config().LogConfig.LogDir} {
 		if dir == "" {
 			continue
 		}
@@ -183,7 +182,7 @@ func (ner *NomadExecRunner) Start(ctx context.Context) (net.IP, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(ctx, ner.BinPath, args...)
 	cmd.Dir = ner.Config().ConfigDir
-	cmd.Stdout = util.NewOutputWriter(ner.Config().NodeName, os.Stdout)
+	//cmd.Stdout = util.NewOutputWriter(ner.Config().NodeName, os.Stdout)
 	cmd.Stderr = util.NewOutputWriter(ner.Config().NodeName, os.Stderr)
 
 	if err := cmd.Start(); err != nil {

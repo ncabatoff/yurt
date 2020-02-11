@@ -152,9 +152,8 @@ func (nc NomadConfig) Files() map[string]string {
 	if nc.NetworkConfig.Network != nil {
 		network = nc.NetworkConfig.Network.String()
 	}
-	files["common.hcl"] = fmt.Sprintf(`
-advertise {
-  http = <<EOF
+	common := fmt.Sprintf(`
+advertise { http = <<EOF
 {{- GetAllInterfaces | include "network" "%s" | attr "address" -}}
 EOF
   rpc = <<EOF
@@ -171,6 +170,17 @@ ports {
 }
 `, network, network, network, portHTTP, portSerf, portRPC)
 
+	if nc.LogConfig.LogDir != "" {
+		common += fmt.Sprintf(`log_file="%s"`+"\n", nc.LogConfig.LogDir)
+	}
+	if nc.LogConfig.LogRotateBytes != 0 {
+		common += fmt.Sprintf(`log_rotate_bytes="%d"`+"\n", nc.LogConfig.LogRotateBytes)
+	}
+	if nc.LogConfig.LogRotateMaxFiles != 0 {
+		common += fmt.Sprintf(`log_rotate_max_files="%d"`+"\n", nc.LogConfig.LogRotateMaxFiles)
+	}
+
+	files["common.hcl"] = common
 	return files
 }
 

@@ -44,7 +44,10 @@ func (c ConsulClusterConfigSingleIP) ServerCommands() []ConsulCommand {
 				JoinAddrs: c.JoinAddrs(),
 				ConfigDir: filepath.Join(c.WorkDir, name, "consul", "config"),
 				DataDir:   filepath.Join(c.WorkDir, name, "consul", "data"),
-				Ports:     c.FirstPorts.Add(i * c.portIncrement()),
+				LogConfig: LogConfig{
+					LogDir: filepath.Join(c.WorkDir, name, "consul", "log"),
+				},
+				Ports: c.FirstPorts.Add(i * c.portIncrement()),
 			},
 		}
 		if len(c.TLS) > 0 {
@@ -63,7 +66,10 @@ func (c ConsulClusterConfigSingleIP) ClientCommand() ConsulCommand {
 		JoinAddrs: c.JoinAddrs(),
 		ConfigDir: filepath.Join(c.WorkDir, name, "consul", "config"),
 		DataDir:   filepath.Join(c.WorkDir, name, "consul", "data"),
-		Ports:     c.FirstPorts.Add(3 * c.portIncrement()),
+		LogConfig: LogConfig{
+			LogDir: filepath.Join(c.WorkDir, name, "consul", "log"),
+		},
+		Ports: c.FirstPorts.Add(3 * c.portIncrement()),
 	}
 	if len(c.TLS) > 0 {
 		cfg.TLS = c.TLS[name]
@@ -124,10 +130,13 @@ func (c ConsulClusterConfigFixedIPs) ServerCommands() []ConsulCommand {
 		name := c.ServerNames[i]
 		command := ConsulServerConfig{
 			ConsulConfig{
-				NodeName:      name,
-				JoinAddrs:     c.JoinAddrs(),
-				ConfigDir:     filepath.Join(c.WorkDir, name, "consul", "config"),
-				DataDir:       filepath.Join(c.WorkDir, name, "consul", "data"),
+				NodeName:  name,
+				JoinAddrs: c.JoinAddrs(),
+				ConfigDir: filepath.Join(c.WorkDir, name, "consul", "config"),
+				DataDir:   filepath.Join(c.WorkDir, name, "consul", "data"),
+				LogConfig: LogConfig{
+					LogDir: filepath.Join(c.WorkDir, name, "consul", "log"),
+				},
 				NetworkConfig: c.NetworkConfig,
 				Ports:         DefConsulPorts(len(c.TLS) > 0),
 			},
@@ -143,10 +152,13 @@ func (c ConsulClusterConfigFixedIPs) ServerCommands() []ConsulCommand {
 func (c ConsulClusterConfigFixedIPs) ClientCommand() ConsulCommand {
 	name := "consul-cli-1"
 	cfg := ConsulConfig{
-		NodeName:      name,
-		JoinAddrs:     c.JoinAddrs(),
-		ConfigDir:     filepath.Join(c.WorkDir, name, "consul", "config"),
-		DataDir:       filepath.Join(c.WorkDir, name, "consul", "data"),
+		NodeName:  name,
+		JoinAddrs: c.JoinAddrs(),
+		ConfigDir: filepath.Join(c.WorkDir, name, "consul", "config"),
+		DataDir:   filepath.Join(c.WorkDir, name, "consul", "data"),
+		LogConfig: LogConfig{
+			LogDir: filepath.Join(c.WorkDir, name, "consul", "log"),
+		},
 		NetworkConfig: c.NetworkConfig,
 		Ports:         DefConsulPorts(len(c.TLS) > 0),
 	}
@@ -319,9 +331,12 @@ func (n NomadClusterConfigSingleIP) ServerCommands() []NomadCommand {
 		command := NomadServerConfig{
 			BootstrapExpect: len(n.ServerNames),
 			NomadConfig: NomadConfig{
-				NodeName:   name, // "nomad-srv-%d", i+1
-				DataDir:    filepath.Join(n.WorkDir, name, "nomad", "data"),
-				ConfigDir:  filepath.Join(n.WorkDir, name, "nomad", "config"),
+				NodeName:  name, // "nomad-srv-%d", i+1
+				DataDir:   filepath.Join(n.WorkDir, name, "nomad", "data"),
+				ConfigDir: filepath.Join(n.WorkDir, name, "nomad", "config"),
+				LogConfig: LogConfig{
+					LogDir: filepath.Join(n.WorkDir, name, "nomad", "log"),
+				},
 				Ports:      n.FirstPorts.Add(i * n.portIncrement()),
 				ConsulAddr: n.ConsulAddrs[i],
 			},
@@ -337,9 +352,12 @@ func (n NomadClusterConfigSingleIP) ServerCommands() []NomadCommand {
 func (n NomadClusterConfigSingleIP) ClientCommand() NomadCommand {
 	name := "nomad-cli-1"
 	cfg := NomadConfig{
-		NodeName:   name,
-		ConfigDir:  filepath.Join(n.WorkDir, name, "nomad", "config"),
-		DataDir:    filepath.Join(n.WorkDir, name, "nomad", "data"),
+		NodeName:  name,
+		ConfigDir: filepath.Join(n.WorkDir, name, "nomad", "config"),
+		DataDir:   filepath.Join(n.WorkDir, name, "nomad", "data"),
+		LogConfig: LogConfig{
+			LogDir: filepath.Join(n.WorkDir, name, "nomad", "log"),
+		},
 		Ports:      n.FirstPorts.Add(3 * n.portIncrement()),
 		ConsulAddr: n.ConsulAddrs[3],
 	}
@@ -390,8 +408,11 @@ func (n NomadClusterConfigFixedIPs) ClientCommand() NomadCommand {
 		NetworkConfig: n.NetworkConfig,
 		ConfigDir:     filepath.Join(n.WorkDir, name, "nomad", "config"),
 		DataDir:       filepath.Join(n.WorkDir, name, "nomad", "data"),
-		Ports:         DefNomadPorts(),
-		ConsulAddr:    n.ConsulAddrs[3],
+		LogConfig: LogConfig{
+			LogDir: filepath.Join(n.WorkDir, name, "nomad", "log"),
+		},
+		Ports:      DefNomadPorts(),
+		ConsulAddr: n.ConsulAddrs[3],
 	}
 	if len(n.TLS) > 0 {
 		cfg.TLS = n.TLS[name]
@@ -414,9 +435,12 @@ func (n NomadClusterConfigFixedIPs) ServerCommands() []NomadCommand {
 		command := NomadServerConfig{
 			BootstrapExpect: len(n.ServerNames),
 			NomadConfig: NomadConfig{
-				NodeName:      name,
-				DataDir:       filepath.Join(n.WorkDir, name, "nomad", "data"),
-				ConfigDir:     filepath.Join(n.WorkDir, name, "nomad", "config"),
+				NodeName:  name,
+				DataDir:   filepath.Join(n.WorkDir, name, "nomad", "data"),
+				ConfigDir: filepath.Join(n.WorkDir, name, "nomad", "config"),
+				LogConfig: LogConfig{
+					LogDir: filepath.Join(n.WorkDir, name, "nomad", "log"),
+				},
 				NetworkConfig: n.NetworkConfig,
 				ConsulAddr:    n.ConsulAddrs[i],
 				Ports:         DefNomadPorts(),

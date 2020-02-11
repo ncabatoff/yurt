@@ -34,41 +34,45 @@ type (
 	}
 )
 
-func LeaderAPIsHealthy(ctx context.Context, apis []LeaderAPI, expectedPeers []string) error {
+func LeaderAPIsHealthyNow(apis []LeaderAPI, expectedPeers []string) error {
 	var errs []error
 	var peers []string
-	var leaders map[string]struct{}
-	for ctx.Err() == nil {
-		errs = nil
-		peers = []string{}
-		leaders = make(map[string]struct{})
+	var leaders = make(map[string]struct{})
 
-		for _, api := range apis {
-			leader, err := api.Leader()
-			if err != nil {
-				errs = append(errs, err)
-				break
-			}
-			if leader != "" {
-				leaders[leader] = struct{}{}
-			}
-			peers, err = api.Peers()
-			if err != nil {
-				errs = append(errs, err)
-				break
-			}
-		}
-		sort.Strings(peers)
-		if len(errs) == 0 && len(leaders) == 1 && reflect.DeepEqual(peers, expectedPeers) {
+	for _, api := range apis {
+		leader, err := api.Leader()
+		if err != nil {
+			errs = append(errs, err)
 			break
+		}
+		if leader != "" {
+			leaders[leader] = struct{}{}
+		}
+		peers, err = api.Peers()
+		if err != nil {
+			errs = append(errs, err)
+			break
+		}
+	}
+	sort.Strings(peers)
+	if len(errs) == 0 && len(leaders) == 1 && reflect.DeepEqual(peers, expectedPeers) {
+		return nil
+	}
+
+	return fmt.Errorf("expected no errs, 1 leader, peers=%v, got %v, %v, %v", expectedPeers,
+		errs, leaders, peers)
+}
+
+func LeaderAPIsHealthy(ctx context.Context, apis []LeaderAPI, expectedPeers []string) error {
+	var err error
+	for ctx.Err() == nil {
+		err = LeaderAPIsHealthyNow(apis, expectedPeers)
+		if err == nil {
+			return nil
 		}
 		time.Sleep(1000 * time.Millisecond)
 	}
-	if ctx.Err() != nil {
-		return fmt.Errorf("expected no errs, 1 leader, peers=%v, got %v, %v, %v", expectedPeers,
-			errs, leaders, peers)
-	}
-	return nil
+	return err
 }
 
 func ConsulLeaderAPIs(runners []ConsulRunner) ([]LeaderAPI, error) {
@@ -101,6 +105,14 @@ func ConsulRunnersHealthy(ctx context.Context, runners []ConsulRunner, expectedP
 		return err
 	}
 	return LeaderAPIsHealthy(ctx, apis, expectedPeers)
+}
+
+func ConsulRunnersHealthyNow(runners []ConsulRunner, expectedPeers []string) error {
+	apis, err := ConsulLeaderAPIs(runners)
+	if err != nil {
+		return err
+	}
+	return LeaderAPIsHealthyNow(apis, expectedPeers)
 }
 
 func NomadRunnersHealthy(ctx context.Context, runners []NomadRunner, expectedPeers []string) error {

@@ -53,8 +53,8 @@ func (c *ConsulDockerRunner) Start(ctx context.Context) (net.IP, error) {
 	}
 
 	consulConfig := c.ConsulCommand.Config()
-	localConfigDir, localDataDir := consulConfig.ConfigDir, consulConfig.DataDir
-	for _, dir := range []string{localConfigDir, localDataDir} {
+	localConfigDir, localDataDir, localLogDir := consulConfig.ConfigDir, consulConfig.DataDir, consulConfig.LogConfig.LogDir
+	for _, dir := range []string{localConfigDir, localDataDir, localLogDir} {
 		if dir == "" {
 			continue
 		}
@@ -85,7 +85,7 @@ func (c *ConsulDockerRunner) Start(ctx context.Context) (net.IP, error) {
 		netName:   consulConfig.NetworkConfig.DockerNetName,
 		cfg: &container.Config{
 			Image: c.Image,
-			Cmd:   c.ConsulCommand.WithDirs("/consul/config", "/consul/data", "").Command(),
+			Cmd:   c.ConsulCommand.WithDirs("/consul/config", "/consul/data", "/consul/log").Command(),
 			Env:   []string{"CONSUL_DISABLE_PERM_MGMT=1"},
 			Labels: map[string]string{
 				"yurt": "true",
@@ -105,6 +105,11 @@ func (c *ConsulDockerRunner) Start(ctx context.Context) (net.IP, error) {
 				Source: localDataDir,
 				Target: "/consul/data",
 			},
+			{
+				Type:   mount.TypeBind,
+				Source: localLogDir,
+				Target: "/consul/log",
+			},
 		},
 		containerName: consulConfig.NodeName,
 		ip:            c.IP,
@@ -117,9 +122,9 @@ func (c *ConsulDockerRunner) Start(ctx context.Context) (net.IP, error) {
 	}
 	c.container = cont
 	c.cancel = cancel
-	go func() {
-		_ = containerLogs(ctx, c.DockerAPI, *c.container)
-	}()
+	//go func() {
+	//	_ = containerLogs(ctx, c.DockerAPI, *c.container)
+	//}()
 	go func() {
 		<-ctx.Done()
 		_ = cleanupContainer(context.Background(), c.DockerAPI, cont.ID)
@@ -388,15 +393,18 @@ func (n *NomadDockerRunner) Start(ctx context.Context) (net.IP, error) {
 	if err := os.MkdirAll(nomadConfig.DataDir, 0700); err != nil {
 		return nil, err
 	}
+	if err := os.MkdirAll(nomadConfig.LogConfig.LogDir, 0700); err != nil {
+		return nil, err
+	}
 
-	localConfigDir, localDataDir := nomadConfig.ConfigDir, nomadConfig.DataDir
+	localConfigDir, localDataDir, localLogDir := nomadConfig.ConfigDir, nomadConfig.DataDir, nomadConfig.LogConfig.LogDir
 
 	dr := &dockerRunner{
 		DockerAPI: n.DockerAPI,
 		netName:   nomadConfig.NetworkConfig.DockerNetName,
 		cfg: &container.Config{
 			Image: n.Image,
-			Cmd:   n.NomadCommand.WithDirs("/nomad/config", "/nomad/data", "").Command(),
+			Cmd:   n.NomadCommand.WithDirs("/nomad/config", "/nomad/data", "/nomad/log").Command(),
 			Labels: map[string]string{
 				"yurt": "true",
 			},
@@ -415,6 +423,11 @@ func (n *NomadDockerRunner) Start(ctx context.Context) (net.IP, error) {
 				Source: localDataDir,
 				Target: "/nomad/data",
 			},
+			{
+				Type:   mount.TypeBind,
+				Source: localLogDir,
+				Target: "/nomad/log",
+			},
 		},
 		containerName: nomadConfig.NodeName,
 		ip:            n.IP,
@@ -427,9 +440,9 @@ func (n *NomadDockerRunner) Start(ctx context.Context) (net.IP, error) {
 	}
 	n.container = cont
 	n.cancel = cancel
-	go func() {
-		_ = containerLogs(ctx, n.DockerAPI, *n.container)
-	}()
+	//go func() {
+	//	_ = containerLogs(ctx, n.DockerAPI, *n.container)
+	//}()
 	go func() {
 		<-ctx.Done()
 		_ = cleanupContainer(context.Background(), n.DockerAPI, cont.ID)

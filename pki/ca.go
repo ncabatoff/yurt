@@ -3,7 +3,6 @@ package pki
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -11,7 +10,6 @@ import (
 
 	vaultapi "github.com/hashicorp/vault/api"
 	"github.com/ncabatoff/yurt/packages"
-	"github.com/ncabatoff/yurt/util"
 )
 
 type CertificateAuthority struct {
@@ -48,8 +46,9 @@ func (ca *CertificateAuthority) Start(ctx context.Context) (err error) {
 	cmd := exec.CommandContext(ctx, binPath, "server", "-dev",
 		"-dev-listen-address", fmt.Sprintf("0.0.0.0:%d", ca.port),
 		"-dev-root-token-id", rootToken)
-	cmd.Stdout = util.NewOutputWriter("vault-ca", os.Stdout)
-	cmd.Stderr = util.NewOutputWriter("vault-ca", os.Stderr)
+	// TODO send log output to file?
+	//cmd.Stdout = util.NewOutputWriter("vault-ca", os.Stdout)
+	//cmd.Stderr = util.NewOutputWriter("vault-ca", os.Stderr)
 
 	if err := cmd.Start(); err != nil {
 		return err

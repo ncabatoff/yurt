@@ -122,7 +122,7 @@ func (cc ConsulConfig) Command() []string {
 		args = append(args, fmt.Sprintf("-config-dir=%s", cc.ConfigDir))
 	}
 	if cc.LogConfig.LogDir != "" {
-		args = append(args, fmt.Sprintf("-log-file=%s/consul.log", cc.LogConfig.LogDir))
+		args = append(args, fmt.Sprintf("-log-file=%s/", cc.LogConfig.LogDir))
 	}
 	if cc.LogConfig.LogRotateBytes != 0 {
 		args = append(args, fmt.Sprintf("-log-rotate-bytes=%d", cc.LogConfig.LogRotateBytes))
