@@ -108,10 +108,9 @@ func (cc ConsulConfig) Command() []string {
 		fmt.Sprintf("-retry-interval=1s"),
 	}
 	if cc.NetworkConfig.Network != nil {
-		args = append(args, "-client=0.0.0.0")
-		// TODO try to restore this
-		//		fmt.Sprintf(`-bind={{ GetPrivateInterfaces | include "network" "%s" | attr "address" }}`,
-		//			cc.NetworkConfig.Network.IP))
+		args = append(args, "-client=0.0.0.0",
+			fmt.Sprintf(`-bind={{ GetPrivateInterfaces | include "network" "%s" | attr "address" }}`,
+				cc.NetworkConfig.Network))
 	} else {
 		args = append(args, "-bind=127.0.0.1")
 	}

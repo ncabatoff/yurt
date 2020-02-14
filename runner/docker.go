@@ -22,7 +22,7 @@ import (
 type ConsulDockerRunner struct {
 	ConsulCommand ConsulCommand
 	Image         string
-	IP            net.IP
+	IP            string
 	DockerAPI     *client.Client
 	container     *types.ContainerJSON
 	cancel        func()
@@ -31,15 +31,11 @@ type ConsulDockerRunner struct {
 var _ ConsulRunner = (*ConsulDockerRunner)(nil)
 
 func NewConsulDockerRunner(api *client.Client, image, ip string, command ConsulCommand) (*ConsulDockerRunner, error) {
-	netip := net.ParseIP(ip)
-	if ip != "" && netip == nil {
-		return nil, fmt.Errorf("bad ip %q", ip)
-	}
 	return &ConsulDockerRunner{
 		DockerAPI:     api,
 		ConsulCommand: command,
 		Image:         image,
-		IP:            netip,
+		IP:            ip,
 	}, nil
 }
 
@@ -241,7 +237,7 @@ type dockerRunner struct {
 	cfg           *container.Config
 	containerName string
 	netName       string
-	ip            net.IP
+	ip            string
 	privileged    bool
 	mounts        []mount.Mount
 }
@@ -262,7 +258,7 @@ func (d *dockerRunner) start(ctx context.Context) (*types.ContainerJSON, error) 
 		es := &network.EndpointSettings{}
 		if len(d.ip) != 0 {
 			es.IPAMConfig = &network.EndpointIPAMConfig{
-				IPv4Address: d.ip.String(),
+				IPv4Address: d.ip,
 			}
 		}
 		networkingConfig.EndpointsConfig = map[string]*network.EndpointSettings{
@@ -323,7 +319,7 @@ func cleanupContainer(ctx context.Context, cli *client.Client, containerID strin
 type NomadDockerRunner struct {
 	NomadCommand NomadCommand
 	Image        string
-	IP           net.IP
+	IP           string
 	DockerAPI    *client.Client
 	container    *types.ContainerJSON
 	cancel       func()
@@ -367,15 +363,11 @@ func (n *NomadDockerRunner) NomadAPIConfig() (*nomadapi.Config, error) {
 var _ NomadRunner = (*NomadDockerRunner)(nil)
 
 func NewNomadDockerRunner(api *client.Client, image, ip string, command NomadCommand) (*NomadDockerRunner, error) {
-	netip := net.ParseIP(ip)
-	if ip != "" && netip == nil {
-		return nil, fmt.Errorf("bad ip %q", ip)
-	}
 	return &NomadDockerRunner{
 		DockerAPI:    api,
 		NomadCommand: command,
 		Image:        image,
-		IP:           netip,
+		IP:           ip,
 	}, nil
 }
 

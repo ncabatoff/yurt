@@ -104,7 +104,7 @@ func testConsulDocker(t *testing.T, te dktestenv, cfg ConsulServerConfig) {
 // TestConsulDocker tests a single node docker Consul cluster.
 func TestConsulDocker(t *testing.T) {
 	t.Parallel()
-	te, _ := testSetupDocker(t, 15*time.Second)
+	te, cleanup := testSetupDocker(t, 15*time.Second)
 	defer cleanup()
 
 	testConsulDocker(t, te, ConsulServerConfig{ConsulConfig: ConsulConfig{
