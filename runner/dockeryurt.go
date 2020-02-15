@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -14,16 +15,27 @@ import (
 	dockerapi "github.com/docker/docker/client"
 	"github.com/docker/go-connections/nat"
 	consulapi "github.com/hashicorp/consul/api"
+	"github.com/hashicorp/go-multierror"
 	nomadapi "github.com/hashicorp/nomad/api"
+	"github.com/ncabatoff/yurt/docker"
 	"github.com/ncabatoff/yurt/packages"
 )
 
 type YurtRunClusterOptions struct {
-	Network         NetworkConfig
+	// Network is the network the docker containers will run in, which the caller
+	// must ensure exists.
+	Network NetworkConfig
+	// ConsulServerIPs are the IPs to use for the server nodes.  For consistency
+	// with other cluster styles in this project, it is named "Consul"ServerIPs,
+	// but the Nomad servers run on these IPs as well.
 	ConsulServerIPs []string
-	BaseImage       string
-	YurtRunBin      string
-	WorkDir         string
+	// BaseImage is the docker image to use as a starting point.  No binaries
+	// from the image will be run, but we do need glibc for Nomad.
+	BaseImage string
+	// YurtRunBin is where yurt-run can be found.
+	YurtRunBin string
+	// WorkDir is where all files are created, excluding binaries.
+	WorkDir string
 }
 
 // YurtRunCluster is used for testing yurt-run.
@@ -40,6 +52,7 @@ func NewYurtRunCluster(options YurtRunClusterOptions, cli *dockerapi.Client) (*Y
 	}, nil
 }
 
+// Start launches the cluster server nodes.
 func (y *YurtRunCluster) Start(ctx context.Context) error {
 	err := y.installBinDir()
 	if err != nil {
@@ -47,6 +60,44 @@ func (y *YurtRunCluster) Start(ctx context.Context) error {
 	}
 	for i, ip := range y.ConsulServerIPs {
 		if err := y.startNode(ctx, i, ip); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (y *YurtRunCluster) Stop(ctx context.Context) error {
+	var errs multierror.Error
+	for _, cont := range y.containers {
+		if err := docker.CleanupContainer(ctx, y.docker, cont.ID); err != nil {
+			errs.Errors = append(errs.Errors, err)
+		}
+	}
+	return errs.ErrorOrNil()
+}
+
+func (y *YurtRunCluster) installBinDir() error {
+	cmd := exec.Command("/Users/ncc/go/go1.13.7/bin/go", "build", "-o", "binaries/yurt-run", "../cmd/yurt-run")
+	for _, e := range os.Environ() {
+		if !strings.HasPrefix(e, "GOOS=") && !strings.HasPrefix(e, "CGO_ENABLED=") {
+			cmd.Env = append(cmd.Env, e)
+		}
+	}
+	cmd.Env = append(cmd.Env, "GOOS=linux")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	err := cmd.Run()
+	if err != nil {
+		return err
+	}
+
+	for _, p := range []string{"consul", "nomad"} {
+		bin, err := packages.GetBinary(p, "linux", "amd64", "binaries")
+		if err != nil {
+			return err
+		}
+		err = os.Link(bin, filepath.Join("binaries", filepath.Base(bin)))
+		if err != nil && !errors.Is(err, os.ErrExist) {
 			return err
 		}
 	}
@@ -79,10 +130,10 @@ func (y *YurtRunCluster) startNode(ctx context.Context, node int, ip string) err
 		"8600/tcp": {},
 		"8600/udp": {},
 	}
-	dr := &dockerRunner{
+	dr := &docker.Runner{
 		DockerAPI: y.docker,
-		netName:   y.Network.DockerNetName,
-		cfg: &container.Config{
+		NetName:   y.Network.DockerNetName,
+		ContainerConfig: &container.Config{
 			Image:      y.BaseImage,
 			Entrypoint: []string{"/opt/yurt/bin/yurt-run"},
 			Cmd: []string{
@@ -96,7 +147,7 @@ func (y *YurtRunCluster) startNode(ctx context.Context, node int, ip string) err
 			ExposedPorts: exposedPorts,
 			WorkingDir:   "/consul/config",
 		},
-		mounts: []mount.Mount{
+		Mounts: []mount.Mount{
 			{
 				Type:   mount.TypeBind,
 				Source: nodeDir,
@@ -109,13 +160,13 @@ func (y *YurtRunCluster) startNode(ctx context.Context, node int, ip string) err
 				ReadOnly: true,
 			},
 		},
-		containerName: nodeName,
-		ip:            ip,
+		ContainerName: nodeName,
+		IP:            ip,
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	cont, err := dr.start(ctx)
+	cont, err := dr.Start(ctx)
 	if err != nil {
 		return err
 	}
@@ -124,25 +175,26 @@ func (y *YurtRunCluster) startNode(ctx context.Context, node int, ip string) err
 	return nil
 }
 
-func (y *YurtRunCluster) installBinDir() error {
-	for _, p := range []string{"consul", "nomad"} {
-		bin, err := packages.GetBinary(p, "linux", "amd64", "binaries")
-		if err != nil {
-			return err
-		}
-		err = os.Link(bin, filepath.Join("binaries", filepath.Base(bin)))
-		if err != nil && !errors.Is(err, os.ErrExist) {
-			return err
+// Cleanup removes the workdir contents.  If all is specified, everything
+// should be cleaned up; otherwise only empty directories are removed.
+func (y *YurtRunCluster) Cleanup(all bool) {
+	for i := range y.ConsulServerIPs {
+		nodeName := fmt.Sprintf("yurt%d", i+1)
+		nodeDir := filepath.Join(y.WorkDir, nodeName)
+		if all {
+			_ = os.RemoveAll(nodeDir)
+		} else {
+			_ = os.Remove(nodeDir)
 		}
 	}
-	return nil
+	_ = os.Remove(y.WorkDir)
 }
 
 func (y *YurtRunCluster) ConsulAPIs() ([]*consulapi.Client, error) {
 	var ret []*consulapi.Client
 	for i := range y.ConsulServerIPs {
 		apiConfig := consulapi.DefaultNonPooledConfig()
-		guestport := DefConsulPorts(false).HTTP
+		guestport := DefConsulPorts().HTTP
 		ports := y.containers[i].NetworkSettings.NetworkSettingsBase.Ports[nat.Port(fmt.Sprintf("%d/tcp", guestport))]
 		if len(ports) == 0 {
 			return nil, fmt.Errorf("no binding for Consul API port %d", guestport)

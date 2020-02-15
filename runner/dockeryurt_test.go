@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"path/filepath"
 	"testing"
+	"time"
 
 	dockerapi "github.com/docker/docker/client"
 	"github.com/hashicorp/go-sockaddr"
@@ -23,7 +24,9 @@ func TestYurtRunCluster_Start(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
 	cli, err := dockerapi.NewClientWithOpts(dockerapi.FromEnv, dockerapi.WithVersion("1.40"))
 	if err != nil {
 		t.Fatal(err)
@@ -59,10 +62,26 @@ func TestYurtRunCluster_Start(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	err = y.Start(ctx)
 	if err != nil {
 		t.Fatal(err)
+	}
+
+	done := make(chan struct{}, 3)
+	defer func() {
+		<-done
+		<-done
+		<-done
+		y.Cleanup(!t.Failed())
+	}()
+	for _, cont := range y.containers {
+		go func(id, name string) {
+			err := docker.DockerWait(cli, id)
+			if err != nil {
+				t.Logf("container %q exited with err %v", name, err)
+			}
+			done <- struct{}{}
+		}(cont.ID, cont.Name)
 	}
 
 	{
@@ -78,7 +97,7 @@ func TestYurtRunCluster_Start(t *testing.T) {
 
 		var addrs []string
 		for _, ip := range y.ConsulServerIPs {
-			addrs = append(addrs, fmt.Sprintf("%s:%d", ip, DefConsulPorts(false).Server))
+			addrs = append(addrs, fmt.Sprintf("%s:%d", ip, DefConsulPorts().Server))
 		}
 
 		if err := LeaderAPIsHealthy(ctx, leaderAPIs, addrs); err != nil {
@@ -105,5 +124,9 @@ func TestYurtRunCluster_Start(t *testing.T) {
 		if err := LeaderAPIsHealthy(ctx, leaderAPIs, addrs); err != nil {
 			t.Fatal(err)
 		}
+	}
+
+	if err := y.Stop(context.Background()); err != nil {
+		t.Logf("stop err: %v", err)
 	}
 }

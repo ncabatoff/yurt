@@ -3,16 +3,17 @@ package runner
 import (
 	"context"
 	"fmt"
-	consulapi "github.com/hashicorp/consul/api"
-	nomadapi "github.com/hashicorp/nomad/api"
-	"github.com/hashicorp/vault/sdk/helper/certutil"
-	"github.com/ncabatoff/yurt/util"
 	"io/ioutil"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	consulapi "github.com/hashicorp/consul/api"
+	nomadapi "github.com/hashicorp/nomad/api"
+	"github.com/hashicorp/vault/sdk/helper/certutil"
+	"github.com/ncabatoff/yurt/util"
 )
 
 type ConsulExecRunner struct {
@@ -87,14 +88,12 @@ func (cer *ConsulExecRunner) ConsulAPIConfig() (*consulapi.Config, error) {
 	// TODO there's no reason we have to limit exec runners to using localhost.
 	// Use network instead.  Or better still the command/config.
 
-	switch {
-	case cer.Config().Ports.HTTP > 0:
-		apiConfig.Address = fmt.Sprintf("%s:%d", "127.0.0.1", cer.Config().Ports.HTTP)
-	case cer.Config().Ports.HTTPS > 0:
-		apiConfig.Address = fmt.Sprintf("%s:%d", "127.0.0.1", cer.Config().Ports.HTTPS)
+	cfg := cer.ConsulCommand.Config()
+	if len(cfg.TLS.Cert) > 0 {
 		apiConfig.Scheme = "https"
-		apiConfig.TLSConfig.CAFile = filepath.Join(cer.Config().ConfigDir, "ca.pem")
+		apiConfig.TLSConfig.CAFile = filepath.Join(cfg.ConfigDir, "ca.pem")
 	}
+	apiConfig.Address = fmt.Sprintf("%s:%d", "127.0.0.1", cfg.Ports.HTTP)
 
 	return apiConfig, nil
 }

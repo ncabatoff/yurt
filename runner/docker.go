@@ -3,20 +3,19 @@ package runner
 import (
 	"context"
 	"fmt"
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/mount"
-	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/client"
-	"github.com/docker/docker/pkg/stdcopy"
-	"github.com/docker/go-connections/nat"
-	consulapi "github.com/hashicorp/consul/api"
-	nomadapi "github.com/hashicorp/nomad/api"
-	"go.uber.org/atomic"
-	"io/ioutil"
 	"net"
 	"os"
 	"path/filepath"
+
+	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/mount"
+	"github.com/docker/docker/client"
+	"github.com/docker/go-connections/nat"
+	consulapi "github.com/hashicorp/consul/api"
+	nomadapi "github.com/hashicorp/nomad/api"
+	"github.com/ncabatoff/yurt/docker"
+	"go.uber.org/atomic"
 )
 
 type ConsulDockerRunner struct {
@@ -76,10 +75,10 @@ func (c *ConsulDockerRunner) Start(ctx context.Context) (net.IP, error) {
 		"8600/udp": {},
 	}
 
-	dr := &dockerRunner{
+	dr := &docker.Runner{
 		DockerAPI: c.DockerAPI,
-		netName:   consulConfig.NetworkConfig.DockerNetName,
-		cfg: &container.Config{
+		NetName:   consulConfig.NetworkConfig.DockerNetName,
+		ContainerConfig: &container.Config{
 			Image: c.Image,
 			Cmd:   c.ConsulCommand.WithDirs("/consul/config", "/consul/data", "/consul/log").Command(),
 			Env:   []string{"CONSUL_DISABLE_PERM_MGMT=1"},
@@ -89,7 +88,7 @@ func (c *ConsulDockerRunner) Start(ctx context.Context) (net.IP, error) {
 			ExposedPorts: exposedPorts,
 			WorkingDir:   "/consul/config",
 		},
-		mounts: []mount.Mount{
+		Mounts: []mount.Mount{
 			{
 				Type:     mount.TypeBind,
 				Source:   localConfigDir,
@@ -107,46 +106,30 @@ func (c *ConsulDockerRunner) Start(ctx context.Context) (net.IP, error) {
 				Target: "/consul/log",
 			},
 		},
-		containerName: consulConfig.NodeName,
-		ip:            c.IP,
+		ContainerName: consulConfig.NodeName,
+		IP:            c.IP,
+		AutoRemove:    true,
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
-	cont, err := dr.start(ctx)
+	cont, err := dr.Start(ctx)
 	if err != nil {
 		return nil, err
 	}
 	c.container = cont
 	c.cancel = cancel
 	//go func() {
-	//	_ = containerLogs(ctx, c.DockerAPI, *c.container)
+	//	_ = docker.ContainerLogs(ctx, c.DockerAPI, *c.container.ID)
 	//}()
 	go func() {
 		<-ctx.Done()
-		_ = cleanupContainer(context.Background(), c.DockerAPI, cont.ID)
+		_ = docker.CleanupContainer(context.Background(), c.DockerAPI, cont.ID)
 	}()
-	return getIP(*cont, consulConfig.NetworkConfig.DockerNetName)
-}
-
-func containerLogs(ctx context.Context, cli *client.Client, cont types.ContainerJSON) error {
-	resp, err := cli.ContainerLogs(ctx, cont.ID, types.ContainerLogsOptions{
-		ShowStdout: true,
-		ShowStderr: true,
-		Follow:     true,
-	})
-	if err != nil {
-		return err
-	}
-
-	_, err = stdcopy.StdCopy(os.Stderr, os.Stderr, resp)
-	if err != nil {
-		return err
-	}
-	return nil
+	return docker.ContainerIP(*cont, consulConfig.NetworkConfig.DockerNetName)
 }
 
 func (c ConsulDockerRunner) Wait() error {
-	return dockerWait(c.DockerAPI, c.container.ID)
+	return docker.DockerWait(c.DockerAPI, c.container.ID)
 }
 
 func (c ConsulDockerRunner) Stop() error {
@@ -163,18 +146,15 @@ func (c *ConsulDockerRunner) ConsulAPI() (*consulapi.Client, error) {
 }
 
 func (c *ConsulDockerRunner) ConsulAPIConfig() (*consulapi.Config, error) {
+	cfg := c.ConsulCommand.Config()
 	apiConfig := consulapi.DefaultNonPooledConfig()
-	var port int
-	switch {
-	case c.Config().Ports.HTTP > 0:
-		apiConfig.Scheme = "http"
-		port = c.Config().Ports.HTTP
-	case c.Config().Ports.HTTPS > 0:
+
+	if len(cfg.TLS.Cert) > 0 {
 		apiConfig.Scheme = "https"
-		port = c.Config().Ports.HTTPS
-		apiConfig.TLSConfig.CAFile = filepath.Join(c.Config().ConfigDir, "ca.pem")
+		apiConfig.TLSConfig.CAFile = filepath.Join(cfg.ConfigDir, "ca.pem")
 	}
 
+	port := cfg.Ports.HTTP
 	ports := c.container.NetworkSettings.NetworkSettingsBase.Ports[nat.Port(fmt.Sprintf("%d/tcp", port))]
 	if len(ports) == 0 {
 		return nil, fmt.Errorf("no binding for Consul API port %d", port)
@@ -184,21 +164,9 @@ func (c *ConsulDockerRunner) ConsulAPIConfig() (*consulapi.Config, error) {
 	return apiConfig, nil
 }
 
-func getIP(cont types.ContainerJSON, netName string) (net.IP, error) {
-	if cont.NetworkSettings.Networks[netName] == nil {
-		return nil, fmt.Errorf("missing private network")
-	}
-	ipString := cont.NetworkSettings.Networks[netName].IPAddress
-	ip := net.ParseIP(ipString)
-	if ip == nil {
-		return nil, fmt.Errorf("parse ip %q failed", ipString)
-	}
-	return ip, nil
-}
-
 func (c *ConsulDockerRunner) AgentAddress() (string, error) {
 	netName := c.ConsulCommand.Config().NetworkConfig.DockerNetName
-	ip, err := getIP(*c.container, netName)
+	ip, err := docker.ContainerIP(*c.container, netName)
 	if err != nil {
 		return "", err
 	}
@@ -232,90 +200,6 @@ func (c *ConsulDockerServerBuilder) MakeConsulRunner(command ConsulCommand) (Con
 	return NewConsulDockerRunner(c.DockerAPI, c.Image, ip, command)
 }
 
-type dockerRunner struct {
-	DockerAPI     *client.Client
-	cfg           *container.Config
-	containerName string
-	netName       string
-	ip            string
-	privileged    bool
-	mounts        []mount.Mount
-}
-
-func (d *dockerRunner) start(ctx context.Context) (*types.ContainerJSON, error) {
-	hostConfig := &container.HostConfig{
-		PublishAllPorts: true,
-		Mounts:          d.mounts,
-		AutoRemove:      true,
-	}
-
-	networkingConfig := &network.NetworkingConfig{}
-	switch d.netName {
-	case "":
-	case "host":
-		hostConfig.NetworkMode = "host"
-	default:
-		es := &network.EndpointSettings{}
-		if len(d.ip) != 0 {
-			es.IPAMConfig = &network.EndpointIPAMConfig{
-				IPv4Address: d.ip,
-			}
-		}
-		networkingConfig.EndpointsConfig = map[string]*network.EndpointSettings{
-			d.netName: es,
-		}
-	}
-
-	// best-effort pull
-	resp, _ := d.DockerAPI.ImageCreate(ctx, d.cfg.Image, types.ImageCreateOptions{})
-	if resp != nil {
-		_, _ = ioutil.ReadAll(resp)
-	}
-
-	cfg := *d.cfg
-	cfg.Hostname = d.containerName
-	consulContainer, err := d.DockerAPI.ContainerCreate(ctx, &cfg, hostConfig, networkingConfig, d.netName+"."+d.containerName)
-	if err != nil {
-		return nil, fmt.Errorf("container create failed: %v", err)
-	}
-
-	err = d.DockerAPI.ContainerStart(ctx, consulContainer.ID, types.ContainerStartOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("container start failed: %v", err)
-	}
-
-	inspect, err := d.DockerAPI.ContainerInspect(ctx, consulContainer.ID)
-	if err != nil {
-		return nil, err
-	}
-	return &inspect, nil
-}
-
-func dockerWait(api *client.Client, containerID string) error {
-	chanWaitOK, chanErr := api.ContainerWait(context.Background(),
-		containerID, container.WaitConditionNotRunning)
-	select {
-	case err := <-chanErr:
-		return err
-	case res := <-chanWaitOK:
-		if res.StatusCode != 0 {
-			return fmt.Errorf("container exited with %d", res.StatusCode)
-		}
-	}
-	return nil
-}
-
-func cleanupContainer(ctx context.Context, cli *client.Client, containerID string) error {
-	err := cli.ContainerStop(ctx, containerID, nil)
-	if err != nil {
-		return err
-	}
-	return cli.ContainerRemove(ctx, containerID, types.ContainerRemoveOptions{
-		RemoveLinks: true,
-		Force:       true,
-	})
-}
-
 type NomadDockerRunner struct {
 	NomadCommand NomadCommand
 	Image        string
@@ -323,10 +207,6 @@ type NomadDockerRunner struct {
 	DockerAPI    *client.Client
 	container    *types.ContainerJSON
 	cancel       func()
-}
-
-func (n *NomadDockerRunner) Config() NomadConfig {
-	return n.NomadCommand.Config()
 }
 
 func (n *NomadDockerRunner) NomadAPI() (*nomadapi.Client, error) {
@@ -341,7 +221,7 @@ func (n *NomadDockerRunner) NomadAPIConfig() (*nomadapi.Config, error) {
 	apiConfig := nomadapi.DefaultConfig()
 
 	scheme, port := "http", 4646
-	port = n.Config().Ports.HTTP
+	port = n.NomadCommand.Config().Ports.HTTP
 	if port <= 0 {
 		port = 4646
 	}
@@ -351,9 +231,9 @@ func (n *NomadDockerRunner) NomadAPIConfig() (*nomadapi.Config, error) {
 		return nil, fmt.Errorf("no binding for Nomad API port")
 	}
 
-	if ca := n.Config().TLS.CA; len(ca) > 0 {
+	if ca := n.NomadCommand.Config().TLS.CA; len(ca) > 0 {
 		scheme = "https"
-		apiConfig.TLSConfig.CACert = filepath.Join(n.Config().ConfigDir, "ca.pem")
+		apiConfig.TLSConfig.CACert = filepath.Join(n.NomadCommand.Config().ConfigDir, "ca.pem")
 	}
 
 	apiConfig.Address = fmt.Sprintf("%s://%s:%s", scheme, "127.0.0.1", ports[0].HostPort)
@@ -391,10 +271,10 @@ func (n *NomadDockerRunner) Start(ctx context.Context) (net.IP, error) {
 
 	localConfigDir, localDataDir, localLogDir := nomadConfig.ConfigDir, nomadConfig.DataDir, nomadConfig.LogConfig.LogDir
 
-	dr := &dockerRunner{
+	dr := &docker.Runner{
 		DockerAPI: n.DockerAPI,
-		netName:   nomadConfig.NetworkConfig.DockerNetName,
-		cfg: &container.Config{
+		NetName:   nomadConfig.NetworkConfig.DockerNetName,
+		ContainerConfig: &container.Config{
 			Image: n.Image,
 			Cmd:   n.NomadCommand.WithDirs("/nomad/config", "/nomad/data", "/nomad/log").Command(),
 			Labels: map[string]string{
@@ -402,7 +282,7 @@ func (n *NomadDockerRunner) Start(ctx context.Context) (net.IP, error) {
 			},
 			WorkingDir: "/nomad/config",
 		},
-		mounts: []mount.Mount{
+		Mounts: []mount.Mount{
 			{
 				Type:   mount.TypeBind,
 				Source: localConfigDir,
@@ -421,12 +301,13 @@ func (n *NomadDockerRunner) Start(ctx context.Context) (net.IP, error) {
 				Target: "/nomad/log",
 			},
 		},
-		containerName: nomadConfig.NodeName,
-		ip:            n.IP,
+		ContainerName: nomadConfig.NodeName,
+		IP:            n.IP,
+		AutoRemove:    true,
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
-	cont, err := dr.start(ctx)
+	cont, err := dr.Start(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -437,13 +318,13 @@ func (n *NomadDockerRunner) Start(ctx context.Context) (net.IP, error) {
 	//}()
 	go func() {
 		<-ctx.Done()
-		_ = cleanupContainer(context.Background(), n.DockerAPI, cont.ID)
+		_ = docker.CleanupContainer(context.Background(), n.DockerAPI, cont.ID)
 	}()
-	return getIP(*cont, nomadConfig.NetworkConfig.DockerNetName)
+	return docker.ContainerIP(*cont, nomadConfig.NetworkConfig.DockerNetName)
 }
 
 func (n NomadDockerRunner) Wait() error {
-	return dockerWait(n.DockerAPI, n.container.ID)
+	return docker.DockerWait(n.DockerAPI, n.container.ID)
 }
 
 func (n NomadDockerRunner) Stop() error {

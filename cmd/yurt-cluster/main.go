@@ -194,7 +194,7 @@ func consulClusterExec(ctx context.Context, workDir string, nodes int, consulBin
 	clusterCfg := runner.ConsulClusterConfigSingleIP{
 		WorkDir:     workDir,
 		ServerNames: serverNames[:nodes],
-		FirstPorts:  runner.SeqConsulPorts(*firstPort, ca != nil),
+		FirstPorts:  runner.SeqConsulPorts(*firstPort),
 	}
 	*firstPort += 5*nodes + 5
 
@@ -278,7 +278,7 @@ func nomadClusterExec(ctx context.Context, workDir string, nodes int, nomadBin s
 			}
 			clusterCfg.TLS[name] = *cert
 		}
-		clusterCfg.ConsulAddrs[nodes] = fmt.Sprintf("localhost:%d", clientPorts.HTTPS)
+		clusterCfg.ConsulAddrs[nodes] = fmt.Sprintf("localhost:%d", clientPorts.HTTP)
 	}
 
 	return runner.BuildNomadCluster(ctx, clusterCfg,
@@ -303,10 +303,7 @@ func nomadClusterDocker(ctx context.Context, workDir string, nodes int, cli *doc
 	if err != nil {
 		return nil, err
 	}
-	port := runner.DefConsulPorts(false).HTTP
-	if ca != nil {
-		port = runner.DefConsulPorts(true).HTTPS
-	}
+	port := runner.DefConsulPorts().HTTP
 	ip := consulClient.(*runner.ConsulDockerRunner).IP
 	clusterCfg := runner.NomadClusterConfigFixedIPs{
 		NetworkConfig: network,

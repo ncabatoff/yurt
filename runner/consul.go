@@ -2,10 +2,11 @@ package runner
 
 import (
 	"fmt"
+	"log"
+
 	"github.com/hashicorp/consul/api"
 	"github.com/hashicorp/vault/sdk/helper/jsonutil"
 	"github.com/ncabatoff/yurt/pki"
-	"log"
 )
 
 // ConsulRunner is used to create a Consul node and talk to it.
@@ -32,31 +33,30 @@ type ConsulCommand interface {
 
 type ConsulPorts struct {
 	HTTP    int
-	HTTPS   int
 	DNS     int
 	SerfLAN int
 	SerfWAN int
 	Server  int
 }
 
-func DefConsulPorts(tls bool) ConsulPorts {
-	cp := ConsulPorts{DNS: 8600, SerfLAN: 8301, SerfWAN: 8302, Server: 8300}
-	if tls {
-		cp.HTTPS, cp.HTTP = 8501, -1
-	} else {
-		cp.HTTPS, cp.HTTP = -1, 8500
+func DefConsulPorts() ConsulPorts {
+	return ConsulPorts{
+		DNS:     8600,
+		HTTP:    8500,
+		SerfLAN: 8301,
+		SerfWAN: 8302,
+		Server:  8300,
 	}
-	return cp
 }
 
-func SeqConsulPorts(start int, tls bool) ConsulPorts {
-	cp := ConsulPorts{DNS: start + 1, SerfLAN: start + 2, SerfWAN: start + 3, Server: start + 4}
-	if tls {
-		cp.HTTPS, cp.HTTP = start, -1
-	} else {
-		cp.HTTPS, cp.HTTP = -1, start
+func SeqConsulPorts(start int) ConsulPorts {
+	return ConsulPorts{
+		HTTP:    start,
+		DNS:     start + 1,
+		SerfLAN: start + 2,
+		SerfWAN: start + 3,
+		Server:  start + 4,
 	}
-	return cp
 }
 
 func addPort(p *int, inc int) {
@@ -66,9 +66,8 @@ func addPort(p *int, inc int) {
 }
 
 func (c ConsulPorts) Add(inc int) ConsulPorts {
-	addPort(&c.HTTP, inc)
-	addPort(&c.HTTPS, inc)
 	addPort(&c.DNS, inc)
+	addPort(&c.HTTP, inc)
 	addPort(&c.SerfLAN, inc)
 	addPort(&c.SerfWAN, inc)
 	addPort(&c.Server, inc)
@@ -132,12 +131,13 @@ func (cc ConsulConfig) Command() []string {
 	if cc.Ports.DNS != 0 {
 		args = append(args, fmt.Sprintf("-dns-port=%d", cc.Ports.DNS))
 	}
-	if cc.Ports.HTTP != 0 {
-		args = append(args, fmt.Sprintf("-http-port=%d", cc.Ports.HTTP))
-	}
-	if cc.Ports.HTTPS != 0 {
+	if len(cc.TLS.Cert) > 0 {
 		// requires https://github.com/hashicorp/consul/pull/7086
-		args = append(args, fmt.Sprintf("-https-port=%d", cc.Ports.HTTPS))
+		args = append(args, fmt.Sprintf("-https-port=%d", cc.Ports.HTTP))
+		args = append(args, "-http-port=-1")
+	} else {
+		args = append(args, fmt.Sprintf("-http-port=%d", cc.Ports.HTTP))
+		args = append(args, "-https-port=-1")
 	}
 	if cc.Ports.SerfLAN != 0 {
 		args = append(args, fmt.Sprintf("-serf-lan-port=%d", cc.Ports.SerfLAN))

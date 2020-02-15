@@ -216,7 +216,7 @@ func runConsul(ctx context.Context, yc *yurtConfig) runner.ConsulRunner {
 			LogConfig: runner.LogConfig{
 				LogDir: filepath.Join(yc.DataDir, "consul", "log"),
 			},
-			Ports: runner.DefConsulPorts(false),
+			Ports: runner.DefConsulPorts(),
 			//TLS:           pki.TLSConfigPEM{},
 		}
 

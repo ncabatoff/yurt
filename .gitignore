@@ -1,4 +1,5 @@
 .idea
-work
 download
 cmd/yurt-cluster/yurt-cluster
+cmd/yurt-run/yurt-run
+runner/binaries

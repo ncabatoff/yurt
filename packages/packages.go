@@ -18,7 +18,7 @@ var registry = map[string]Upstream{
 	},
 	"consul": {
 		name:      "consul",
-		version:   "1.7.0-beta4",
+		version:   "1.7.0",
 		urlFormat: "https://releases.hashicorp.com/consul/%s/consul_%s_%s_%s.zip",
 	},
 	"vault": {

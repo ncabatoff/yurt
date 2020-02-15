@@ -16,15 +16,15 @@ import (
 
 var nextPort = atomic.NewUint32(20000)
 
-func nextConsulPorts(tls bool) ConsulPorts {
+func nextConsulPorts() ConsulPorts {
 	start := nextPort.Add(5) - 5
-	return SeqConsulPorts(int(start), tls)
+	return SeqConsulPorts(int(start))
 }
 
-func nextConsulBatch(nodes int, tls bool) ConsulPorts {
+func nextConsulBatch(nodes int) ConsulPorts {
 	numPorts := 5 * nodes
 	start := int(nextPort.Add(uint32(numPorts))) - numPorts
-	return SeqConsulPorts(int(start), tls)
+	return SeqConsulPorts(int(start))
 }
 
 func nextNomadPorts() NomadPorts {
@@ -98,7 +98,7 @@ func TestConsulExec(t *testing.T) {
 	te := newtestenv(t, 30*time.Second)
 	defer te.cleanup()
 
-	ports := nextConsulPorts(false)
+	ports := nextConsulPorts()
 	testConsulExec(t, te, ConsulServerConfig{
 		ConsulConfig{
 			NodeName:  "consul-test",
@@ -114,7 +114,7 @@ func TestConsulExecTLS(t *testing.T) {
 	te := newtestenv(t, 30*time.Second)
 	defer te.cleanup()
 
-	ports := nextConsulPorts(true)
+	ports := nextConsulPorts()
 	ca := tempca(t, te.ctx, te.tmpDir)
 	testConsulExecTLS(t, te, ca, ConsulConfig{
 		NodeName:  "consul-test",
@@ -158,7 +158,7 @@ func threeNodeConsulExecNoTLS(t *testing.T, te testenv) (*ConsulClusterRunner, e
 		ConsulClusterConfigSingleIP{
 			WorkDir:     te.tmpDir,
 			ServerNames: []string{"consul-srv-1", "consul-srv-2", "consul-srv-3"},
-			FirstPorts:  nextConsulBatch(4, false),
+			FirstPorts:  nextConsulBatch(4),
 		}, &ConsulExecBuilder{te.consulPath})
 }
 
@@ -177,7 +177,7 @@ func threeNodeConsulExecTLS(t *testing.T, te testenv, ca *pki.CertificateAuthori
 		ConsulClusterConfigSingleIP{
 			WorkDir:     te.tmpDir,
 			ServerNames: names[:3],
-			FirstPorts:  nextConsulBatch(4, true),
+			FirstPorts:  nextConsulBatch(4),
 			TLS:         certs,
 		}, &ConsulExecBuilder{te.consulPath})
 }
@@ -210,7 +210,7 @@ func TestNomadExec(t *testing.T) {
 	te := newtestenv(t, 30*time.Second)
 	defer te.cleanup()
 
-	consulPorts := nextConsulPorts(false)
+	consulPorts := nextConsulPorts()
 	testConsulExec(t, te, ConsulServerConfig{
 		ConsulConfig{
 			NodeName:  "consul-test",
@@ -234,7 +234,7 @@ func TestNomadExecTLS(t *testing.T) {
 	te := newtestenv(t, 30*time.Second)
 	defer te.cleanup()
 
-	consulPorts := nextConsulPorts(true)
+	consulPorts := nextConsulPorts()
 	ca := tempca(t, te.ctx, te.tmpDir)
 	testConsulExecTLS(t, te, ca, ConsulConfig{
 		NodeName:  "consul-test",
@@ -246,7 +246,7 @@ func TestNomadExecTLS(t *testing.T) {
 		BootstrapExpect: 1,
 		NomadConfig: NomadConfig{
 			NodeName:   "nomad-test",
-			ConsulAddr: fmt.Sprintf("127.0.0.1:%d", consulPorts.HTTPS),
+			ConsulAddr: fmt.Sprintf("127.0.0.1:%d", consulPorts.HTTP),
 			Ports:      nextNomadPorts(),
 		}})
 }
@@ -327,7 +327,7 @@ func TestNomadExecClusterTLS(t *testing.T) {
 		WorkDir:     filepath.Join(te.tmpDir, "nomad"),
 		ServerNames: names[:3],
 		FirstPorts:  nextNomadBatch(4),
-		ConsulAddrs: append(consulCluster.Config.APIAddrs(), fmt.Sprintf("localhost:%d", clientPorts.HTTPS)),
+		ConsulAddrs: append(consulCluster.Config.APIAddrs(), fmt.Sprintf("localhost:%d", clientPorts.HTTP)),
 		TLS:         certs,
 	}, &NomadExecBuilder{te.nomadPath})
 	if err != nil {

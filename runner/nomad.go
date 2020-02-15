@@ -2,10 +2,10 @@ package runner
 
 import (
 	"fmt"
-	"github.com/hashicorp/vault/sdk/helper/jsonutil"
 	"log"
 
 	nomadapi "github.com/hashicorp/nomad/api"
+	"github.com/hashicorp/vault/sdk/helper/jsonutil"
 	"github.com/ncabatoff/yurt/pki"
 )
 
@@ -18,7 +18,6 @@ type NomadCommand interface {
 
 type NomadRunner interface {
 	Runner
-	Config() NomadConfig
 	NomadAPI() (*nomadapi.Client, error)
 	NomadAPIConfig() (*nomadapi.Config, error)
 }

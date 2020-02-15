@@ -3,9 +3,6 @@ package runner
 import (
 	"context"
 	"fmt"
-	"github.com/hashicorp/go-sockaddr"
-	"github.com/ncabatoff/yurt/docker"
-	"github.com/ncabatoff/yurt/pki"
 	"math/rand"
 	"net"
 	"path/filepath"
@@ -13,6 +10,9 @@ import (
 	"time"
 
 	dockerapi "github.com/docker/docker/client"
+	"github.com/hashicorp/go-sockaddr"
+	"github.com/ncabatoff/yurt/docker"
+	"github.com/ncabatoff/yurt/pki"
 )
 
 const (
@@ -111,7 +111,7 @@ func TestConsulDocker(t *testing.T) {
 		NetworkConfig: te.netConf,
 		NodeName:      "consul-srv1",
 		JoinAddrs:     []string{"127.0.0.1:8301"},
-		Ports:         DefConsulPorts(false),
+		Ports:         DefConsulPorts(),
 	}})
 }
 
@@ -126,7 +126,7 @@ func TestConsulDockerTLS(t *testing.T) {
 		NetworkConfig: te.netConf,
 		NodeName:      "consul-srv1",
 		JoinAddrs:     []string{"127.0.0.1:8301"},
-		Ports:         DefConsulPorts(true),
+		Ports:         DefConsulPorts(),
 	}})
 }
 
@@ -267,7 +267,7 @@ func TestNomadDockerTLS(t *testing.T) {
 			LogConfig: LogConfig{
 				LogDir: filepath.Join(te.tmpDir, "nomad", "log"),
 			},
-			ConsulAddr: fmt.Sprintf("localhost:%d", client.Config().Ports.HTTPS),
+			ConsulAddr: fmt.Sprintf("localhost:%d", client.Config().Ports.HTTP),
 			TLS:        *cert,
 		},
 	})
@@ -304,7 +304,7 @@ func TestNomadDockerCluster(t *testing.T) {
 		NetworkConfig: te.netConf,
 		WorkDir:       te.tmpDir,
 		ServerNames:   []string{"nomad-srv-1", "nomad-srv-2", "nomad-srv-3"},
-		ConsulAddrs:   append(consulCluster.Config.APIAddrs(), fmt.Sprintf("%s:%d", ip, DefConsulPorts(false).HTTP)),
+		ConsulAddrs:   append(consulCluster.Config.APIAddrs(), fmt.Sprintf("%s:%d", ip, DefConsulPorts().HTTP)),
 	}, &NomadDockerBuilder{
 		DockerAPI: te.docker,
 		Image:     imageNomad,
@@ -350,7 +350,7 @@ func threeNodeNomadDockerTLS(t *testing.T, te dktestenv, ca *pki.CertificateAuth
 			WorkDir:        te.tmpDir,
 			ServerNames:    names[:3],
 			NomadServerIPs: ips,
-			ConsulAddrs:    append(consulCluster.Config.APIAddrs(), fmt.Sprintf("%s:%d", ip, DefConsulPorts(true).HTTPS)),
+			ConsulAddrs:    append(consulCluster.Config.APIAddrs(), fmt.Sprintf("%s:%d", ip, DefConsulPorts().HTTP)),
 			TLS:            certs,
 		},
 		&NomadDockerServerBuilder{

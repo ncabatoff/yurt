@@ -12,6 +12,7 @@ require (
 	github.com/gorilla/mux v1.7.3 // indirect
 	github.com/hashicorp/consul/api v1.3.0
 	github.com/hashicorp/go-getter v1.4.1
+	github.com/hashicorp/go-multierror v1.0.0
 	github.com/hashicorp/go-sockaddr v1.0.2
 	github.com/hashicorp/nomad/api v0.0.0-20200124004857-fea44b0d8e20
 	github.com/hashicorp/vault/api v1.0.4
