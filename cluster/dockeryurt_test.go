@@ -1,8 +1,10 @@
-package runner
+package cluster
 
 import (
 	"context"
 	"fmt"
+	"github.com/ncabatoff/yurt/runner"
+	"github.com/ncabatoff/yurt/util"
 	"io/ioutil"
 	"math/rand"
 	"path/filepath"
@@ -24,7 +26,7 @@ func TestYurtRunCluster_Start(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	cli, err := dockerapi.NewClientWithOpts(dockerapi.FromEnv, dockerapi.WithVersion("1.40"))
@@ -50,12 +52,12 @@ func TestYurtRunCluster_Start(t *testing.T) {
 	}
 
 	y, err := NewYurtRunCluster(YurtRunClusterOptions{
-		Network: NetworkConfig{
+		Network: util.NetworkConfig{
 			DockerNetName: t.Name(),
 			Network:       netsa,
 		},
 		ConsulServerIPs: sas,
-		BaseImage:       imageNomad,
+		BaseImage:       "noenv/nomad:0.10.3",
 		YurtRunBin:      "../../yurt-run",
 		WorkDir:         absDir,
 	}, cli)
@@ -68,21 +70,24 @@ func TestYurtRunCluster_Start(t *testing.T) {
 	}
 
 	done := make(chan struct{}, 3)
-	defer func() {
-		<-done
-		<-done
-		<-done
-		y.Cleanup(!t.Failed())
-	}()
 	for _, cont := range y.containers {
 		go func(id, name string) {
-			err := docker.DockerWait(cli, id)
+			err := docker.Wait(cli, id)
 			if err != nil {
 				t.Logf("container %q exited with err %v", name, err)
 			}
 			done <- struct{}{}
 		}(cont.ID, cont.Name)
 	}
+	defer func() {
+		if err := y.Stop(context.Background()); err != nil {
+			t.Logf("stop err: %v", err)
+		}
+		<-done
+		<-done
+		<-done
+		y.Cleanup(!t.Failed())
+	}()
 
 	{
 		clients, err := y.ConsulAPIs()
@@ -90,17 +95,17 @@ func TestYurtRunCluster_Start(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		var leaderAPIs []LeaderAPI
+		var leaderAPIs []runner.LeaderAPI
 		for _, c := range clients {
 			leaderAPIs = append(leaderAPIs, c.Status())
 		}
 
 		var addrs []string
 		for _, ip := range y.ConsulServerIPs {
-			addrs = append(addrs, fmt.Sprintf("%s:%d", ip, DefConsulPorts().Server))
+			addrs = append(addrs, fmt.Sprintf("%s:%d", ip, runner.DefConsulPorts().Server))
 		}
 
-		if err := LeaderAPIsHealthy(ctx, leaderAPIs, addrs); err != nil {
+		if err := runner.LeaderAPIsHealthy(ctx, leaderAPIs, addrs); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -111,22 +116,19 @@ func TestYurtRunCluster_Start(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		var leaderAPIs []LeaderAPI
+		var leaderAPIs []runner.LeaderAPI
 		for _, c := range clients {
 			leaderAPIs = append(leaderAPIs, c.Status())
 		}
 
 		var addrs []string
 		for _, ip := range y.ConsulServerIPs {
-			addrs = append(addrs, fmt.Sprintf("%s:%d", ip, DefNomadPorts().RPC))
+			addrs = append(addrs, fmt.Sprintf("%s:%d", ip, runner.DefNomadPorts().RPC))
 		}
 
-		if err := LeaderAPIsHealthy(ctx, leaderAPIs, addrs); err != nil {
+		if err := runner.LeaderAPIsHealthy(ctx, leaderAPIs, addrs); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	if err := y.Stop(context.Background()); err != nil {
-		t.Logf("stop err: %v", err)
-	}
 }

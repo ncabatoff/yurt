@@ -3,48 +3,81 @@ package pki
 import (
 	"context"
 	"fmt"
+	"github.com/ncabatoff/yurt/util"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
+	"github.com/hashicorp/go-uuid"
 	vaultapi "github.com/hashicorp/vault/api"
 	"github.com/ncabatoff/yurt/packages"
 )
 
 type CertificateAuthority struct {
-	workDir string
-	port    int
-	cmd     *exec.Cmd
-	cancel  func()
-	cli     *vaultapi.Client
+	path string
+	cli  *vaultapi.Client
 }
 
 func NewExternalCertificateAuthority(vaultAddr, vaultToken string) (*CertificateAuthority, error) {
-	cli, err := makeVaultClient(vaultAddr, vaultToken)
+	cli, err := util.MakeVaultClient(vaultAddr, vaultToken)
 	if err != nil {
 		return nil, err
 	}
-	return &CertificateAuthority{cli: cli}, nil
+	return NewCertificateAuthority(cli)
 }
 
-func NewCertificateAuthority(workDir string, port int) (*CertificateAuthority, error) {
-	return &CertificateAuthority{workDir: workDir, port: port}, nil
+func NewCertificateAuthority(cli *vaultapi.Client) (*CertificateAuthority, error) {
+	u, err := uuid.GenerateUUID()
+	if err != nil {
+		return nil, err
+	}
+
+	if err := createRootCA(cli, u); err != nil {
+		return nil, err
+	}
+
+	if err := createIntermediateCA(cli, u); err != nil {
+		return nil, err
+	}
+
+	return &CertificateAuthority{
+		path: u,
+		cli:  cli,
+	}, nil
 }
 
-func (ca *CertificateAuthority) Start(ctx context.Context) (err error) {
-	if ca.cmd != nil {
+type VaultRunner struct {
+	WorkDir string
+	Port    int
+	cmd     *exec.Cmd
+	ctx     context.Context
+	cancel  func()
+	Cli     *vaultapi.Client
+}
+
+func NewVaultRunner(workDir string, port int) (*VaultRunner, error) {
+	return &VaultRunner{WorkDir: workDir, Port: port}, nil
+}
+
+// Start launches a Vault instance on the configured port, which may write files
+// to workDir.  It will be killed when the context is cancelled.
+func (v *VaultRunner) Start(ctx context.Context) (err error) {
+	if v.cmd != nil {
 		return fmt.Errorf("already running")
 	}
 
-	var binPath string
-	if binPath, err = packages.GetBinary("vault", runtime.GOOS, runtime.GOARCH, "download"); err != nil {
+	dldirBase := filepath.Join(os.TempDir(), "yurt-test-downloads")
+	binPath, err := packages.GetBinary("vault", runtime.GOOS, runtime.GOARCH, dldirBase)
+	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithCancel(ctx)
+	v.ctx, v.cancel = context.WithCancel(ctx)
 	rootToken := "devroot"
-	cmd := exec.CommandContext(ctx, binPath, "server", "-dev",
-		"-dev-listen-address", fmt.Sprintf("0.0.0.0:%d", ca.port),
+	cmd := exec.CommandContext(v.ctx, binPath, "server", "-dev",
+		"-dev-listen-address", fmt.Sprintf("0.0.0.0:%d", v.Port),
 		"-dev-root-token-id", rootToken)
 	// TODO send log output to file?
 	//cmd.Stdout = util.NewOutputWriter("vault-ca", os.Stdout)
@@ -53,28 +86,19 @@ func (ca *CertificateAuthority) Start(ctx context.Context) (err error) {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	ca.cmd = cmd
-	ca.cancel = cancel
+	v.cmd = cmd
 	defer func() {
 		if err != nil {
-			cancel()
+			v.cancel()
 		}
 	}()
 
-	ca.cli, err = makeVaultClient(fmt.Sprintf("http://localhost:%d", ca.port), rootToken)
+	v.Cli, err = util.MakeVaultClient(fmt.Sprintf("http://localhost:%d", v.Port), rootToken)
 	if err != nil {
 		return err
 	}
 
-	if err := waitVaultUnsealed(ctx, ca.cli); err != nil {
-		return err
-	}
-
-	if err := createRootCA(ca.cli); err != nil {
-		return err
-	}
-
-	if err := createIntermediateCA(ca.cli); err != nil {
+	if err := waitVaultUnsealed(ctx, v.Cli); err != nil {
 		return err
 	}
 
@@ -93,19 +117,9 @@ func waitVaultUnsealed(ctx context.Context, cli *vaultapi.Client) (err error) {
 	return fmt.Errorf("unseal failed, last error: %v", err)
 }
 
-func makeVaultClient(addr, token string) (*vaultapi.Client, error) {
-	vaultConfig := vaultapi.DefaultConfig()
-	vaultConfig.Address = addr
-	cli, err := vaultapi.NewClient(vaultConfig)
-	if err != nil {
-		return nil, err
-	}
-	cli.SetToken(token)
-	return cli, nil
-}
-
-func createRootCA(cli *vaultapi.Client) error {
-	if err := cli.Sys().Mount("pki_root", &vaultapi.MountInput{
+func createRootCA(cli *vaultapi.Client, pfx string) error {
+	rootPath := pfx + "-pki-root"
+	if err := cli.Sys().Mount(rootPath, &vaultapi.MountInput{
 		Type: "pki",
 		Config: vaultapi.MountConfigInput{
 			MaxLeaseTTL: "87600h",
@@ -114,7 +128,7 @@ func createRootCA(cli *vaultapi.Client) error {
 		return err
 	}
 
-	_, err := cli.Logical().Write("pki_root/root/generate/internal", map[string]interface{}{
+	_, err := cli.Logical().Write(rootPath+"/root/generate/internal", map[string]interface{}{
 		"common_name": "example.com",
 		"ttl":         "87600h",
 	})
@@ -122,9 +136,9 @@ func createRootCA(cli *vaultapi.Client) error {
 		return err
 	}
 
-	_, err = cli.Logical().Write("pki_root/config/urls", map[string]interface{}{
-		"issuing_certificates":   fmt.Sprintf("%s/v1/pki_root/ca", cli.Address()),
-		"crl_distribution_point": fmt.Sprintf("%s/v1/pki_root/crl", cli.Address()),
+	_, err = cli.Logical().Write(rootPath+"/config/urls", map[string]interface{}{
+		"issuing_certificates":   fmt.Sprintf("%s/v1/%s/ca", cli.Address(), rootPath),
+		"crl_distribution_point": fmt.Sprintf("%s/v1/%s/crl", cli.Address(), rootPath),
 	})
 	if err != nil {
 		return err
@@ -132,8 +146,10 @@ func createRootCA(cli *vaultapi.Client) error {
 	return nil
 }
 
-func createIntermediateCA(cli *vaultapi.Client) error {
-	if err := cli.Sys().Mount("pki_int", &vaultapi.MountInput{
+func createIntermediateCA(cli *vaultapi.Client, pfx string) error {
+	rootPath, intPath := pfx+"-pki-root", pfx+"-pki-int"
+
+	if err := cli.Sys().Mount(intPath, &vaultapi.MountInput{
 		Type: "pki",
 		Config: vaultapi.MountConfigInput{
 			MaxLeaseTTL: "43800h",
@@ -142,7 +158,7 @@ func createIntermediateCA(cli *vaultapi.Client) error {
 		return err
 	}
 
-	resp, err := cli.Logical().Write("pki_int/intermediate/generate/internal", map[string]interface{}{
+	resp, err := cli.Logical().Write(intPath+"/intermediate/generate/internal", map[string]interface{}{
 		"common_name": "example.com Intermediate Authority",
 		"ttl":         "43800h",
 	})
@@ -150,7 +166,7 @@ func createIntermediateCA(cli *vaultapi.Client) error {
 		return err
 	}
 
-	resp, err = cli.Logical().Write("pki_root/root/sign-intermediate", map[string]interface{}{
+	resp, err = cli.Logical().Write(rootPath+"/root/sign-intermediate", map[string]interface{}{
 		"csr":    resp.Data["csr"].(string),
 		"format": "pem_bundle",
 	})
@@ -158,14 +174,14 @@ func createIntermediateCA(cli *vaultapi.Client) error {
 		return err
 	}
 
-	_, err = cli.Logical().Write("pki_int/intermediate/set-signed", map[string]interface{}{
+	_, err = cli.Logical().Write(intPath+"/intermediate/set-signed", map[string]interface{}{
 		"certificate": strings.Join([]string{resp.Data["certificate"].(string), resp.Data["issuing_ca"].(string)}, "\n"),
 	})
 	if err != nil {
 		return err
 	}
 
-	resp, err = cli.Logical().Write("pki_int/roles/consul-server", map[string]interface{}{
+	resp, err = cli.Logical().Write(intPath+"/roles/consul-server", map[string]interface{}{
 		"allowed_domains":  "server.dc1.consul",
 		"allow_subdomains": "true",
 		"allow_localhost":  "true",
@@ -177,7 +193,7 @@ func createIntermediateCA(cli *vaultapi.Client) error {
 		return err
 	}
 
-	resp, err = cli.Logical().Write("pki_int/roles/nomad-server", map[string]interface{}{
+	resp, err = cli.Logical().Write(intPath+"/roles/nomad-server", map[string]interface{}{
 		"allowed_domains":  "server.global.nomad",
 		"allow_subdomains": "true",
 		"allow_localhost":  "true",
@@ -192,7 +208,7 @@ func createIntermediateCA(cli *vaultapi.Client) error {
 }
 
 func (ca *CertificateAuthority) serverTLS(ctx context.Context, role, cn, ip, ttl string) (*TLSConfigPEM, error) {
-	secret, err := ca.cli.Logical().Write("pki_int/issue/"+role, map[string]interface{}{
+	secret, err := ca.cli.Logical().Write(ca.path+"-pki-int/issue/"+role, map[string]interface{}{
 		"common_name": cn,
 		"alt_names":   "localhost",
 		"ip_sans":     ip,
@@ -219,5 +235,5 @@ func (ca *CertificateAuthority) ConsulServerTLS(ctx context.Context, ip, ttl str
 }
 
 func (ca *CertificateAuthority) NomadServerTLS(ctx context.Context, ip, ttl string) (*TLSConfigPEM, error) {
-	return ca.serverTLS(ctx, "nomad-server", "server.global.nomad", "127.0.0.1", ttl)
+	return ca.serverTLS(ctx, "nomad-server", "server.global.nomad", ip+",127.0.0.1", ttl)
 }

@@ -31,14 +31,18 @@ func testca(t *testing.T, timeout time.Duration) *testenv {
 			cleanup()
 		}
 	}()
-	var ca *CertificateAuthority
-	ca, err = NewCertificateAuthority(tmpdir, 8200)
+	var v *VaultRunner
+	v, err = NewVaultRunner(tmpdir, 8200)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = ca.Start(ctx)
+	err = v.Start(ctx)
 	if err != nil {
 		t.Fatal(err)
+	}
+	ca, err := NewCertificateAuthority(v.Cli)
+	if err != nil {
+		return nil
 	}
 	return &testenv{
 		tmpdir:  tmpdir,
@@ -54,6 +58,7 @@ func TestCertificateAuthority_ConsulServerTLS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// TODO parse 'em, smoke check values
 	if tlspem.CA == "" {
 		t.Fatal("no cacert")
 	}

@@ -7,6 +7,7 @@ import (
 	nomadapi "github.com/hashicorp/nomad/api"
 	"github.com/hashicorp/vault/sdk/helper/jsonutil"
 	"github.com/ncabatoff/yurt/pki"
+	"github.com/ncabatoff/yurt/util"
 )
 
 type NomadCommand interface {
@@ -50,7 +51,7 @@ func (n NomadPorts) Add(inc int) NomadPorts {
 
 type NomadConfig struct {
 	NodeName      string
-	NetworkConfig NetworkConfig
+	NetworkConfig util.NetworkConfig
 	Ports         NomadPorts
 	LogConfig     LogConfig
 	DataDir       string

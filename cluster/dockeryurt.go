@@ -1,9 +1,10 @@
-package runner
+package cluster
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ncabatoff/yurt/util"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,12 +20,13 @@ import (
 	nomadapi "github.com/hashicorp/nomad/api"
 	"github.com/ncabatoff/yurt/docker"
 	"github.com/ncabatoff/yurt/packages"
+	"github.com/ncabatoff/yurt/runner"
 )
 
 type YurtRunClusterOptions struct {
 	// Network is the network the docker containers will run in, which the caller
 	// must ensure exists.
-	Network NetworkConfig
+	Network util.NetworkConfig
 	// ConsulServerIPs are the IPs to use for the server nodes.  For consistency
 	// with other cluster styles in this project, it is named "Consul"ServerIPs,
 	// but the Nomad servers run on these IPs as well.
@@ -164,8 +166,6 @@ func (y *YurtRunCluster) startNode(ctx context.Context, node int, ip string) err
 		IP:            ip,
 	}
 
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
 	cont, err := dr.Start(ctx)
 	if err != nil {
 		return err
@@ -194,7 +194,7 @@ func (y *YurtRunCluster) ConsulAPIs() ([]*consulapi.Client, error) {
 	var ret []*consulapi.Client
 	for i := range y.ConsulServerIPs {
 		apiConfig := consulapi.DefaultNonPooledConfig()
-		guestport := DefConsulPorts().HTTP
+		guestport := runner.DefConsulPorts().HTTP
 		ports := y.containers[i].NetworkSettings.NetworkSettingsBase.Ports[nat.Port(fmt.Sprintf("%d/tcp", guestport))]
 		if len(ports) == 0 {
 			return nil, fmt.Errorf("no binding for Consul API port %d", guestport)
@@ -214,7 +214,7 @@ func (y *YurtRunCluster) NomadAPIs() ([]*nomadapi.Client, error) {
 	var ret []*nomadapi.Client
 	for i := range y.ConsulServerIPs {
 		apiConfig := nomadapi.DefaultConfig()
-		guestport := DefNomadPorts().HTTP
+		guestport := runner.DefNomadPorts().HTTP
 		ports := y.containers[i].NetworkSettings.NetworkSettingsBase.Ports[nat.Port(fmt.Sprintf("%d/tcp", guestport))]
 		if len(ports) == 0 {
 			return nil, fmt.Errorf("no binding for Nomad API port %d", guestport)

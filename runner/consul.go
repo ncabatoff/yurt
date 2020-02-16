@@ -7,6 +7,7 @@ import (
 	"github.com/hashicorp/consul/api"
 	"github.com/hashicorp/vault/sdk/helper/jsonutil"
 	"github.com/ncabatoff/yurt/pki"
+	"github.com/ncabatoff/yurt/util"
 )
 
 // ConsulRunner is used to create a Consul node and talk to it.
@@ -76,7 +77,7 @@ func (c ConsulPorts) Add(inc int) ConsulPorts {
 
 // ConsulConfig describes how to run a single Consul agent.
 type ConsulConfig struct {
-	NetworkConfig NetworkConfig
+	NetworkConfig util.NetworkConfig
 	// JoinAddrs specifies the addresses of the Consul servers.  If they have
 	// a :port suffix, it should be that of the SerfLAN port.
 	JoinAddrs []string

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/ncabatoff/yurt/runner/exec"
+	"github.com/ncabatoff/yurt/util"
 	"io/ioutil"
 	"log"
 	"os"
@@ -208,7 +210,7 @@ func runConsul(ctx context.Context, yc *yurtConfig) runner.ConsulRunner {
 	var consulCommand runner.ConsulCommand
 	{
 		baseConfig := runner.ConsulConfig{
-			NetworkConfig: runner.NetworkConfig{Network: yc.network},
+			NetworkConfig: util.NetworkConfig{Network: yc.network},
 			JoinAddrs:     yc.ConsulServerIPs,
 			NodeName:      myName,
 			DataDir:       filepath.Join(yc.DataDir, "consul", "data"),
@@ -227,7 +229,7 @@ func runConsul(ctx context.Context, yc *yurtConfig) runner.ConsulRunner {
 		}
 	}
 
-	builder := runner.ConsulExecBuilder{BinPath: yc.ConsulBin}
+	builder := exec.ConsulExecBuilder{BinPath: yc.ConsulBin}
 	consulRunner, err := builder.MakeConsulRunner(consulCommand)
 	if err != nil {
 		log.Fatal(err)
@@ -249,7 +251,7 @@ func runNomad(ctx context.Context, yc *yurtConfig) runner.NomadRunner {
 	var nomadCommand runner.NomadCommand
 	{
 		baseConfig := runner.NomadConfig{
-			NetworkConfig: runner.NetworkConfig{Network: yc.network},
+			NetworkConfig: util.NetworkConfig{Network: yc.network},
 			NodeName:      myName,
 			DataDir:       filepath.Join(yc.DataDir, "nomad", "data"),
 			ConfigDir:     filepath.Join(yc.DataDir, "nomad", "config"),
@@ -270,7 +272,7 @@ func runNomad(ctx context.Context, yc *yurtConfig) runner.NomadRunner {
 		}
 	}
 
-	builder := runner.NomadExecBuilder{BinPath: yc.NomadBin}
+	builder := exec.NomadExecBuilder{BinPath: yc.NomadBin}
 	nomadRunner, err := builder.MakeNomadRunner(nomadCommand)
 	if err != nil {
 		log.Fatal(err)

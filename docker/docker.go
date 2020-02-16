@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"github.com/docker/docker/api/types"
@@ -9,9 +10,9 @@ import (
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
+	"io"
 	"io/ioutil"
-	"net"
-	"os"
+	"log"
 )
 
 func SetupNetwork(ctx context.Context, cli *client.Client, netName, cidr string) (string, error) {
@@ -24,13 +25,16 @@ func SetupNetwork(ctx context.Context, cli *client.Client, netName, cidr string)
 			if len(netRes.IPAM.Config) > 0 && netRes.IPAM.Config[0].Subnet == cidr {
 				return netRes.ID, nil
 			}
-			_ = cli.NetworkRemove(ctx, netRes.ID)
+			err = cli.NetworkRemove(ctx, netRes.ID)
+			if err != nil {
+				return "", err
+			}
 		}
 	}
 
 	id, err := createNetwork(ctx, cli, netName, cidr)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("couldn't create network %s on %s: %w", netName, cidr, err)
 	}
 	return id, nil
 }
@@ -57,7 +61,7 @@ func createNetwork(ctx context.Context, cli *client.Client, netName, cidr string
 	return resp.ID, nil
 }
 
-func DockerWait(api *client.Client, containerID string) error {
+func Wait(api *client.Client, containerID string) error {
 	chanWaitOK, chanErr := api.ContainerWait(context.Background(),
 		containerID, container.WaitConditionNotRunning)
 	select {
@@ -82,16 +86,11 @@ func CleanupContainer(ctx context.Context, cli *client.Client, containerID strin
 	})
 }
 
-func ContainerIP(cont types.ContainerJSON, netName string) (net.IP, error) {
+func ContainerIP(cont types.ContainerJSON, netName string) (string, error) {
 	if cont.NetworkSettings.Networks[netName] == nil {
-		return nil, fmt.Errorf("missing private network")
+		return "", fmt.Errorf("missing private network")
 	}
-	ipString := cont.NetworkSettings.Networks[netName].IPAddress
-	ip := net.ParseIP(ipString)
-	if ip == nil {
-		return nil, fmt.Errorf("parse ip %q failed", ipString)
-	}
-	return ip, nil
+	return cont.NetworkSettings.Networks[netName].IPAddress, nil
 }
 
 type Runner struct {
@@ -137,7 +136,8 @@ func (d *Runner) Start(ctx context.Context) (*types.ContainerJSON, error) {
 
 	cfg := *d.ContainerConfig
 	cfg.Hostname = d.ContainerName
-	consulContainer, err := d.DockerAPI.ContainerCreate(ctx, &cfg, hostConfig, networkingConfig, d.NetName+"."+d.ContainerName)
+	fullName := d.NetName + "." + d.ContainerName
+	consulContainer, err := d.DockerAPI.ContainerCreate(ctx, &cfg, hostConfig, networkingConfig, fullName)
 	if err != nil {
 		return nil, fmt.Errorf("container create failed: %v", err)
 	}
@@ -151,10 +151,25 @@ func (d *Runner) Start(ctx context.Context) (*types.ContainerJSON, error) {
 	if err != nil {
 		return nil, err
 	}
+	var buf = &bytes.Buffer{}
+	go func() {
+		_ = ContainerLogs(ctx, d.DockerAPI, inspect.ID, buf)
+	}()
+	go func() {
+		//log.Printf("waiting for context on %s", fullName)
+		<-ctx.Done()
+		if ctx.Err() == context.DeadlineExceeded {
+			log.Print(buf.String())
+		}
+		//log.Printf("killing %s", fullName)
+		if err := CleanupContainer(context.Background(), d.DockerAPI, inspect.ID); err != nil {
+			log.Print(err)
+		}
+	}()
 	return &inspect, nil
 }
 
-func ContainerLogs(ctx context.Context, cli *client.Client, id string) error {
+func ContainerLogs(ctx context.Context, cli *client.Client, id string, writer io.Writer) error {
 	resp, err := cli.ContainerLogs(ctx, id, types.ContainerLogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,
@@ -164,7 +179,7 @@ func ContainerLogs(ctx context.Context, cli *client.Client, id string) error {
 		return err
 	}
 
-	_, err = stdcopy.StdCopy(os.Stderr, os.Stderr, resp)
+	_, err = stdcopy.StdCopy(writer, writer, resp)
 	if err != nil {
 		return err
 	}

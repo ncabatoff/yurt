@@ -3,8 +3,6 @@ package runner
 import (
 	"context"
 	"fmt"
-	"github.com/hashicorp/go-sockaddr"
-	"net"
 	"reflect"
 	"sort"
 	"time"
@@ -12,7 +10,7 @@ import (
 
 type (
 	Runner interface {
-		Start(ctx context.Context) (net.IP, error)
+		Start(ctx context.Context) (string, error)
 		Wait() error
 		Stop() error
 	}
@@ -20,11 +18,6 @@ type (
 	LeaderAPI interface {
 		Leader() (string, error)
 		Peers() ([]string, error)
-	}
-
-	NetworkConfig struct {
-		Network       sockaddr.SockAddr
-		DockerNetName string
 	}
 
 	LogConfig struct {

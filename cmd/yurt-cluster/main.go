@@ -6,7 +6,11 @@ import (
 	"fmt"
 	dockerapi "github.com/docker/docker/client"
 	"github.com/hashicorp/go-sockaddr"
+	"github.com/ncabatoff/yurt/cluster"
 	"github.com/ncabatoff/yurt/docker"
+	docker2 "github.com/ncabatoff/yurt/runner/docker"
+	"github.com/ncabatoff/yurt/runner/exec"
+	"github.com/ncabatoff/yurt/util"
 	"golang.org/x/exp/rand"
 	"io/ioutil"
 	"log"
@@ -86,8 +90,8 @@ func main() {
 	}
 
 	var cli *dockerapi.Client
-	var cc *runner.ConsulClusterRunner
-	var network runner.NetworkConfig
+	var cc *cluster.ConsulClusterRunner
+	var network util.NetworkConfig
 	switch *flagMode {
 	case "exec":
 		cc, err = consulClusterExec(ctx, datadir, *flagNodes, consulAbs, flagFirstPort, ca)
@@ -111,7 +115,7 @@ func main() {
 			log.Fatal(err)
 		}
 		defer cli.NetworkRemove(ctx, netID)
-		network = runner.NetworkConfig{
+		network = util.NetworkConfig{
 			DockerNetName: netName,
 			Network:       sa,
 		}
@@ -135,7 +139,7 @@ func main() {
 		}
 	}
 
-	var nc *runner.NomadClusterRunner
+	var nc *cluster.NomadClusterRunner
 	switch *flagMode {
 	case "exec":
 		nc, err = nomadClusterExec(ctx, datadir, *flagNodes, nomadAbs, flagFirstPort, cc, ca)
@@ -184,14 +188,14 @@ func main() {
 	}
 }
 
-func consulClusterExec(ctx context.Context, workDir string, nodes int, consulBin string, firstPort *int, ca *pki.CertificateAuthority) (*runner.ConsulClusterRunner, error) {
+func consulClusterExec(ctx context.Context, workDir string, nodes int, consulBin string, firstPort *int, ca *pki.CertificateAuthority) (*cluster.ConsulClusterRunner, error) {
 	serverNames := make([]string, nodes+1)
 	for i := range serverNames {
 		serverNames[i] = fmt.Sprintf("consul-srv-%d", i+1)
 	}
 	serverNames[nodes] = "consul-cli-1"
 
-	clusterCfg := runner.ConsulClusterConfigSingleIP{
+	clusterCfg := cluster.ConsulClusterConfigSingleIP{
 		WorkDir:     workDir,
 		ServerNames: serverNames[:nodes],
 		FirstPorts:  runner.SeqConsulPorts(*firstPort),
@@ -208,11 +212,11 @@ func consulClusterExec(ctx context.Context, workDir string, nodes int, consulBin
 			clusterCfg.TLS[name] = *cert
 		}
 	}
-	return runner.BuildConsulCluster(ctx, clusterCfg,
-		&runner.ConsulExecBuilder{BinPath: consulBin})
+	return cluster.BuildConsulCluster(ctx, clusterCfg,
+		&exec.ConsulExecBuilder{BinPath: consulBin})
 }
 
-func consulClusterDocker(ctx context.Context, workDir string, nodes int, cli *dockerapi.Client, consulImage string, network runner.NetworkConfig, ca *pki.CertificateAuthority) (*runner.ConsulClusterRunner, error) {
+func consulClusterDocker(ctx context.Context, workDir string, nodes int, cli *dockerapi.Client, consulImage string, network util.NetworkConfig, ca *pki.CertificateAuthority) (*cluster.ConsulClusterRunner, error) {
 	names := make([]string, nodes+1)
 	for i := range names {
 		names[i] = fmt.Sprintf("consul-srv-%d", i+1)
@@ -226,7 +230,7 @@ func consulClusterDocker(ctx context.Context, workDir string, nodes int, cli *do
 		ips = append(ips, serverIP.String())
 	}
 
-	clusterCfg := runner.ConsulClusterConfigFixedIPs{
+	clusterCfg := cluster.ConsulClusterConfigFixedIPs{
 		NetworkConfig:   network,
 		WorkDir:         workDir,
 		ServerNames:     names[:nodes],
@@ -243,15 +247,15 @@ func consulClusterDocker(ctx context.Context, workDir string, nodes int, cli *do
 			clusterCfg.TLS[name] = *cert
 		}
 	}
-	return runner.BuildConsulCluster(ctx, clusterCfg,
-		&runner.ConsulDockerServerBuilder{
+	return cluster.BuildConsulCluster(ctx, clusterCfg,
+		&docker2.ConsulDockerServerBuilder{
 			DockerAPI: cli,
 			Image:     consulImage,
 			IPs:       ips,
 		})
 }
 
-func nomadClusterExec(ctx context.Context, workDir string, nodes int, nomadBin string, firstPort *int, cc *runner.ConsulClusterRunner, ca *pki.CertificateAuthority) (*runner.NomadClusterRunner, error) {
+func nomadClusterExec(ctx context.Context, workDir string, nodes int, nomadBin string, firstPort *int, cc *cluster.ConsulClusterRunner, ca *pki.CertificateAuthority) (*cluster.NomadClusterRunner, error) {
 	serverNames := make([]string, nodes+1)
 	for i := range serverNames {
 		serverNames[i] = fmt.Sprintf("nomad-srv-%d", i+1)
@@ -261,7 +265,7 @@ func nomadClusterExec(ctx context.Context, workDir string, nodes int, nomadBin s
 	client, _ := cc.Client()
 	clientPorts := client.Config().Ports
 	clientAddr := fmt.Sprintf("localhost:%d", clientPorts.HTTP)
-	clusterCfg := runner.NomadClusterConfigSingleIP{
+	clusterCfg := cluster.NomadClusterConfigSingleIP{
 		WorkDir:     workDir,
 		ServerNames: serverNames[:nodes],
 		FirstPorts:  runner.SeqNomadPorts(*firstPort),
@@ -281,11 +285,11 @@ func nomadClusterExec(ctx context.Context, workDir string, nodes int, nomadBin s
 		clusterCfg.ConsulAddrs[nodes] = fmt.Sprintf("localhost:%d", clientPorts.HTTP)
 	}
 
-	return runner.BuildNomadCluster(ctx, clusterCfg,
-		&runner.NomadExecBuilder{BinPath: nomadBin})
+	return cluster.BuildNomadCluster(ctx, clusterCfg,
+		&exec.NomadExecBuilder{BinPath: nomadBin})
 }
 
-func nomadClusterDocker(ctx context.Context, workDir string, nodes int, cli *dockerapi.Client, nomadImage string, network runner.NetworkConfig, cc *runner.ConsulClusterRunner, ca *pki.CertificateAuthority) (*runner.NomadClusterRunner, error) {
+func nomadClusterDocker(ctx context.Context, workDir string, nodes int, cli *dockerapi.Client, nomadImage string, network util.NetworkConfig, cc *cluster.ConsulClusterRunner, ca *pki.CertificateAuthority) (*cluster.NomadClusterRunner, error) {
 	names := make([]string, nodes+1)
 	for i := range names {
 		names[i] = fmt.Sprintf("nomad-srv-%d", i+1)
@@ -304,8 +308,8 @@ func nomadClusterDocker(ctx context.Context, workDir string, nodes int, cli *doc
 		return nil, err
 	}
 	port := runner.DefConsulPorts().HTTP
-	ip := consulClient.(*runner.ConsulDockerRunner).IP
-	clusterCfg := runner.NomadClusterConfigFixedIPs{
+	ip := consulClient.(*docker2.ConsulDockerRunner).IP
+	clusterCfg := cluster.NomadClusterConfigFixedIPs{
 		NetworkConfig: network,
 		WorkDir:       workDir,
 		ServerNames:   names[:nodes],
@@ -322,8 +326,8 @@ func nomadClusterDocker(ctx context.Context, workDir string, nodes int, cli *doc
 			clusterCfg.TLS[name] = *cert
 		}
 	}
-	return runner.BuildNomadCluster(ctx, clusterCfg,
-		&runner.NomadDockerServerBuilder{
+	return cluster.BuildNomadCluster(ctx, clusterCfg,
+		&docker2.NomadDockerServerBuilder{
 			DockerAPI: cli,
 			Image:     nomadImage,
 			IPs:       ips,
@@ -331,14 +335,14 @@ func nomadClusterDocker(ctx context.Context, workDir string, nodes int, cli *doc
 }
 
 func vaultCA(ctx context.Context, workDir string, firstPort *int) (*pki.CertificateAuthority, error) {
-	ca, err := pki.NewCertificateAuthority(workDir, *firstPort)
+	v, err := pki.NewVaultRunner(workDir, *firstPort)
 	*firstPort++
 	if err != nil {
 		return nil, err
 	}
-	err = ca.Start(ctx)
+	err = v.Start(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return ca, nil
+	return pki.NewCertificateAuthority(v.Cli)
 }
