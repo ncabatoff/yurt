@@ -101,14 +101,13 @@ type Runner struct {
 	IP              string
 	Privileged      bool
 	Mounts          []mount.Mount
-	AutoRemove      bool
 }
 
 func (d *Runner) Start(ctx context.Context) (*types.ContainerJSON, error) {
 	hostConfig := &container.HostConfig{
 		PublishAllPorts: true,
 		Mounts:          d.Mounts,
-		AutoRemove:      d.AutoRemove,
+		AutoRemove:      true,
 	}
 
 	networkingConfig := &network.NetworkingConfig{}
@@ -162,9 +161,7 @@ func (d *Runner) Start(ctx context.Context) (*types.ContainerJSON, error) {
 			log.Print(buf.String())
 		}
 		//log.Printf("killing %s", fullName)
-		if err := CleanupContainer(context.Background(), d.DockerAPI, inspect.ID); err != nil {
-			log.Print(err)
-		}
+		_ = CleanupContainer(context.Background(), d.DockerAPI, inspect.ID)
 	}()
 	return &inspect, nil
 }

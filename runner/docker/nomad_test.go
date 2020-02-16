@@ -16,10 +16,11 @@ const imageNomad = "noenv/nomad:0.10.3"
 
 func TestNomadDocker(t *testing.T) {
 	t.Parallel()
-	te := testutil.NewDockerTestEnv(t, 15*time.Second)
+	te := testutil.NewDockerTestEnv(t, 30*time.Second)
 	defer te.Cleanup()
 
-	consulRunner := testConsulDocker(t, te, SingleConsulServerConfig(te.NetConf))
+	ip := te.NextIP()
+	consulRunner := testConsulDocker(t, te, ip, SingleConsulServerConfig(te.NetConf))
 	addr, err := consulRunner.AgentAddress()
 	if err != nil {
 		t.Fatal(err)
@@ -30,7 +31,7 @@ func TestNomadDocker(t *testing.T) {
 
 func TestNomadDockerTLS(t *testing.T) {
 	t.Parallel()
-	te := testutil.NewDockerTestEnv(t, 15*time.Second)
+	te := testutil.NewDockerTestEnv(t, 30*time.Second)
 	defer te.Cleanup()
 
 	ca, err := pki.NewCertificateAuthority(Vault.Cli)

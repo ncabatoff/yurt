@@ -213,7 +213,7 @@ func (c *ConsulClusterRunner) StartServers(ctx context.Context) error {
 		}
 		ip, err := runner.Start(ctx)
 		if err != nil {
-			return err
+			return fmt.Errorf("error starting consul server: %w", err)
 		}
 		c.group.Go(runner.Wait)
 		c.servers = append(c.servers, runner)
@@ -226,17 +226,14 @@ func (c *ConsulClusterRunner) StartServers(ctx context.Context) error {
 // TODO make this a func instead of a method; don't manage clients as part of
 // cluster group.
 func (c *ConsulClusterRunner) StartClient(ctx context.Context) error {
-	c.group, ctx = errgroup.WithContext(ctx)
-
 	command := c.Config.ClientCommand()
 	runner, err := c.Builder.MakeConsulRunner(command)
 	if err != nil {
 		return err
 	}
 	if _, err := runner.Start(ctx); err != nil {
-		return err
+		return fmt.Errorf("error starting consul agent: %w", err)
 	}
-	c.group.Go(runner.Wait)
 	c.clients = append(c.clients, runner)
 
 	return nil
@@ -461,8 +458,6 @@ func (n *NomadClusterRunner) StartServers(ctx context.Context) error {
 }
 
 func (n *NomadClusterRunner) StartClient(ctx context.Context) error {
-	n.group, ctx = errgroup.WithContext(ctx)
-
 	command := n.Config.ClientCommand()
 	runner, err := n.Builder.MakeNomadRunner(command)
 	if err != nil {
@@ -471,7 +466,6 @@ func (n *NomadClusterRunner) StartClient(ctx context.Context) error {
 	if _, err := runner.Start(ctx); err != nil {
 		return err
 	}
-	n.group.Go(runner.Wait)
 	n.clients = append(n.clients, runner)
 
 	return nil

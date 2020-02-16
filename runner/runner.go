@@ -57,6 +57,9 @@ func LeaderAPIsHealthyNow(apis []LeaderAPI, expectedPeers []string) error {
 }
 
 func LeaderAPIsHealthy(ctx context.Context, apis []LeaderAPI, expectedPeers []string) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	var err error
 	for ctx.Err() == nil {
 		err = LeaderAPIsHealthyNow(apis, expectedPeers)

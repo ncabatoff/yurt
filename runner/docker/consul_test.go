@@ -19,7 +19,8 @@ func TestConsulDocker(t *testing.T) {
 	te := testutil.NewDockerTestEnv(t, 15*time.Second)
 	defer te.Cleanup()
 
-	testConsulDocker(t, te, SingleConsulServerConfig(te.NetConf))
+	ip := te.NextIP()
+	testConsulDocker(t, te, ip, SingleConsulServerConfig(te.NetConf))
 }
 
 // TestConsulDockerTLS tests a single node docker Consul cluster with TLS.
@@ -44,19 +45,19 @@ func SingleConsulServerConfig(netConf util.NetworkConfig) runner.ConsulServerCon
 }
 
 func testConsulDockerTLS(t *testing.T, te testutil.DockerTestEnv, cfg runner.ConsulServerConfig, ca *pki.CertificateAuthority) *ConsulDockerRunner {
-	tls, err := ca.ConsulServerTLS(te.Ctx, "127.0.0.1", "10m")
+	ip := te.NextIP()
+	tls, err := ca.ConsulServerTLS(te.Ctx, ip, "10m")
 	if err != nil {
 		t.Fatal(err)
 	}
 	cfg.TLS = *tls
-	return testConsulDocker(t, te, cfg)
+	return testConsulDocker(t, te, ip, cfg)
 }
 
-func testConsulDocker(t *testing.T, te testutil.DockerTestEnv, cfg runner.ConsulServerConfig) *ConsulDockerRunner {
+func testConsulDocker(t *testing.T, te testutil.DockerTestEnv, ip string, cfg runner.ConsulServerConfig) *ConsulDockerRunner {
 	cfg.ConfigDir = filepath.Join(te.TmpDir, "consul/config")
 	cfg.DataDir = filepath.Join(te.TmpDir, "consul/data")
 	cfg.LogConfig.LogDir = filepath.Join(te.TmpDir, "consul/log")
-	ip := te.NextIP()
 	cfg.JoinAddrs = []string{fmt.Sprintf("%s:%d", ip, cfg.Ports.SerfLAN)}
 	r, err := NewConsulDockerRunner(te.Docker, imageConsul, ip, cfg)
 	if err != nil {
