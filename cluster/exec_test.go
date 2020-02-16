@@ -1,15 +1,21 @@
 package cluster
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
 
+	consulapi "github.com/hashicorp/consul/api"
+	nomadapi "github.com/hashicorp/nomad/api"
 	"github.com/ncabatoff/yurt/pki"
 	"github.com/ncabatoff/yurt/runner"
 	"github.com/ncabatoff/yurt/runner/exec"
 	"github.com/ncabatoff/yurt/testutil"
+	promapi "github.com/prometheus/client_golang/api"
+	promv1 "github.com/prometheus/client_golang/api/prometheus/v1"
+	"github.com/skratchdot/open-golang/open"
 )
 
 func nextConsulBatch(nodes int) runner.ConsulPorts {
@@ -79,7 +85,7 @@ func TestConsulExecClusterTLS(t *testing.T) {
 // three node exec Consul cluster.
 func TestNomadExecCluster(t *testing.T) {
 	t.Parallel()
-	te := testutil.NewExecTestEnv(t, 30*time.Second)
+	te := testutil.NewExecTestEnv(t, 45*time.Second)
 	defer te.Cleanup()
 
 	consulCluster, err := threeNodeConsulExecNoTLS(t, te)
@@ -92,8 +98,8 @@ func TestNomadExecCluster(t *testing.T) {
 	}
 	clientPorts := consulClient.Config().Ports
 
-	_, err = BuildNomadCluster(te.Ctx, NomadClusterConfigSingleIP{
-		WorkDir:     filepath.Join(te.TmpDir, "nomad"),
+	cluster, err := BuildNomadCluster(te.Ctx, NomadClusterConfigSingleIP{
+		WorkDir:     te.TmpDir,
 		ServerNames: []string{"nomad-srv-1", "nomad-srv-2", "nomad-srv-3"},
 		FirstPorts:  nextNomadBatch(4),
 		ConsulAddrs: append(consulCluster.Config.APIAddrs(), fmt.Sprintf("localhost:%d", clientPorts.HTTP)),
@@ -101,6 +107,157 @@ func TestNomadExecCluster(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	ccfg, err := consulCluster.servers[0].ConsulAPIConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = open.Run(fmt.Sprintf("%s://%s", ccfg.Scheme, ccfg.Address))
+
+	consul, err := consulClient.ConsulAPI()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ncfg, err := cluster.servers[0].NomadAPIConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	open.Run(ncfg.Address)
+
+	nomad, err := cluster.clients[0].NomadAPI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	testJobs(t, te.Ctx, consul, nomad, fmt.Sprintf(execJobHCL, te.PrometheusPath))
+}
+
+var execJobHCL = `
+job "prometheus" {
+  datacenters = ["dc1"]
+  type = "service"
+  group "prometheus" {
+    task "prometheus" {
+      template {
+        destination = "local/prometheus.yml"
+        data = <<EOH
+global:
+  scrape_interval: "1s"
+
+scrape_configs:
+- job_name: prometheus-local
+  static_configs:
+  - targets: ['{{env "NOMAD_ADDR_http"}}']
+EOH
+      }
+      driver = "raw_exec"
+      config {
+        command = "%s"
+        args = [
+          "--config.file=${NOMAD_TASK_DIR}/prometheus.yml",
+          "--storage.tsdb.path=${NOMAD_TASK_DIR}/data/prometheus",
+          "--web.listen-address=${NOMAD_ADDR_http}",
+        ]
+      }
+      resources {
+        network {
+          port "http" {}
+        }
+      }
+      service {
+        name = "prometheus"
+        port = "http"
+        check {
+          type = "http"
+          port = "http"
+          path = "/metrics"
+          interval = "3s"
+          timeout = "1s"
+        }
+      }
+    }
+  }
+} 
+`
+
+func testJobs(t *testing.T, ctx context.Context, consul *consulapi.Client, nomad *nomadapi.Client, jobhcl string) {
+	job, err := nomad.Jobs().ParseHCL(jobhcl, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	register, _, err := nomad.Jobs().Register(job, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if register.Warnings != "" {
+		t.Logf("register warnings: %v", register.Warnings)
+	}
+
+	defer func() {
+		_, _, err := nomad.Jobs().Deregister(*job.ID, false, nil)
+		if err != nil {
+			return
+		}
+
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			time.Sleep(100 * time.Millisecond)
+			resp, _, err := nomad.Jobs().Summary(*job.ID, nil)
+			if err != nil {
+				continue
+			}
+			if s, ok := resp.Summary["prometheus"]; ok {
+				if s.Running > 0 {
+					continue
+				}
+			}
+			return
+		}
+	}()
+	deadline := time.Now().Add(15 * time.Second)
+
+	if time.Now().After(deadline) {
+		t.Fatal("timed out without seeing running state")
+	}
+
+	var promaddr string
+	for time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+		svcs, _, err := consul.Catalog().Service("prometheus", "", nil)
+		if err != nil {
+			t.Fatal(err, consul)
+		}
+		if len(svcs) != 0 {
+			t.Log(svcs[0])
+			hostip := svcs[0].ServiceTaggedAddresses["lan_ipv4"]
+			promaddr = fmt.Sprintf("http://%s:%d", hostip.Address, hostip.Port)
+			break
+		}
+	}
+
+	if time.Now().After(deadline) {
+		t.Fatalf("timed out without seeing service")
+	}
+
+	for time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+		cli, err := promapi.NewClient(promapi.Config{Address: promaddr})
+		if err != nil {
+			t.Fatal(err)
+		}
+		api := promv1.NewAPI(cli)
+		targs, err := api.Targets(ctx)
+		if err != nil {
+			continue
+		}
+		if len(targs.Active) > 0 {
+			return
+		}
+		if len(targs.Dropped) > 0 {
+			t.Logf("dropped targets: %v", targs.Dropped)
+		}
+	}
+	t.Fatal("timed out without seeing targets")
 }
 
 // TestNomadExecClusterTLS tests a three node exec Nomad cluster talking to a

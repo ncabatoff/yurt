@@ -2,14 +2,14 @@ package cluster
 
 import (
 	"fmt"
-	"github.com/ncabatoff/yurt/runner"
 	"math/rand"
 	"net"
 	"testing"
 	"time"
 
 	"github.com/ncabatoff/yurt/pki"
-	docker2 "github.com/ncabatoff/yurt/runner/docker"
+	"github.com/ncabatoff/yurt/runner"
+	"github.com/ncabatoff/yurt/runner/docker"
 	"github.com/ncabatoff/yurt/testutil"
 )
 
@@ -48,7 +48,7 @@ func threeNodeConsulDocker(t *testing.T, te testutil.DockerTestEnv) (*ConsulClus
 			ServerNames:     names,
 			ConsulServerIPs: ips[:3],
 		},
-		&docker2.ConsulDockerServerBuilder{
+		&docker.ConsulDockerServerBuilder{
 			DockerAPI: te.Docker,
 			Image:     imageConsul,
 			IPs:       ips,
@@ -80,7 +80,7 @@ func threeNodeConsulDockerTLS(t *testing.T, te testutil.DockerTestEnv, ca *pki.C
 			ConsulServerIPs: ips[:3],
 			TLS:             certs,
 		},
-		&docker2.ConsulDockerServerBuilder{
+		&docker.ConsulDockerServerBuilder{
 			DockerAPI: te.Docker,
 			Image:     imageConsul,
 			IPs:       ips,
@@ -129,21 +129,81 @@ func TestNomadDockerCluster(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ip := consulClient.(*docker2.ConsulDockerRunner).IP
+	ip := consulClient.(*docker.ConsulDockerRunner).IP
 
 	_, err = BuildNomadCluster(te.Ctx, NomadClusterConfigFixedIPs{
 		NetworkConfig: te.NetConf,
 		WorkDir:       te.TmpDir,
 		ServerNames:   []string{"nomad-srv-1", "nomad-srv-2", "nomad-srv-3"},
 		ConsulAddrs:   append(consulCluster.Config.APIAddrs(), fmt.Sprintf("%s:%d", ip, runner.DefConsulPorts().HTTP)),
-	}, &docker2.NomadDockerBuilder{
+	}, &docker.NomadDockerBuilder{
 		DockerAPI: te.Docker,
 		Image:     imageNomad,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	//consul, err := consulClient.ConsulAPI()
+	//if err != nil {
+	//	t.Fatal(err)
+	//}
+	//nomad, err := cluster.clients[0].NomadAPI()
+	//if err != nil {
+	//	t.Fatal(err)
+	//}
+	//testJobs(t, te.Ctx, consul, nomad, execJobHCL)
 }
+
+var dockerJobHCL = `
+job "prometheus" {
+  datacenters = ["dc1"]
+  type = "service"
+  group "prometheus" {
+    task "prometheus" {
+      template {
+        destination = "local/prometheus.yml"
+        data = <<EOH
+global:
+  scrape_interval: "1s"
+
+scrape_configs:
+- job_name: prometheus-local
+  static_configs:
+  - targets: ['{{env "NOMAD_ADDR_http"}}']
+EOH
+      }
+      driver = "docker"
+      config {
+        image = "prom/prometheus:v2.16.0"
+        args = [
+          #"--config.file=/local/prometheus.yml",
+          #"--storage.tsdb.path=/alloc/data/prometheus",
+          "--config.file=${NOMAD_TASK_DIR}/prometheus.yml",
+          "--storage.tsdb.path=${NOMAD_TASK_DIR}/data/prometheus",
+          "--web.listen-address=${NOMAD_ADDR_http}",
+        ]
+      }
+      resources {
+        network {
+          port "http" {}
+        }
+      }
+      service {
+        name = "prometheus"
+        port = "http"
+        check {
+          type = "http"
+          port = "http"
+          path = "/"
+          interval = "3s"
+          timeout = "1s"
+        }
+      }
+    }
+  }
+} 
+`
 
 func TestNomadDockerClusterTLS(t *testing.T) {
 	t.Parallel()
@@ -181,7 +241,7 @@ func threeNodeNomadDockerTLS(t *testing.T, te testutil.DockerTestEnv, ca *pki.Ce
 	if err != nil {
 		t.Fatal(err)
 	}
-	ip := consulClient.(*docker2.ConsulDockerRunner).IP
+	ip := consulClient.(*docker.ConsulDockerRunner).IP
 	return BuildNomadCluster(te.Ctx,
 		NomadClusterConfigFixedIPs{
 			NetworkConfig:  te.NetConf,
@@ -191,7 +251,7 @@ func threeNodeNomadDockerTLS(t *testing.T, te testutil.DockerTestEnv, ca *pki.Ce
 			ConsulAddrs:    append(consulCluster.Config.APIAddrs(), fmt.Sprintf("%s:%d", ip, runner.DefConsulPorts().HTTP)),
 			TLS:            certs,
 		},
-		&docker2.NomadDockerServerBuilder{
+		&docker.NomadDockerServerBuilder{
 			DockerAPI: te.Docker,
 			Image:     imageNomad,
 			IPs:       ips,

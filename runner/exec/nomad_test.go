@@ -56,9 +56,9 @@ func testNomadExecTLS(t *testing.T, te testutil.ExecTestEnv, ca *pki.Certificate
 }
 
 func testNomadExec(t *testing.T, te testutil.ExecTestEnv, cfg runner.NomadServerConfig) {
-	cfg.ConfigDir = filepath.Join(te.TmpDir, "nomad/config")
-	cfg.DataDir = filepath.Join(te.TmpDir, "nomad/data")
-	cfg.LogConfig = runner.LogConfig{LogDir: filepath.Join(te.TmpDir, "nomad/log")}
+	cfg.ConfigDir = filepath.Join(te.TmpDir, "config")
+	cfg.DataDir = filepath.Join(te.TmpDir, "data")
+	cfg.LogConfig = runner.LogConfig{LogDir: filepath.Join(te.TmpDir, "log")}
 	r, _ := NewNomadExecRunner(te.NomadPath, cfg)
 
 	ip, err := r.Start(te.Ctx)

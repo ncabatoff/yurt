@@ -171,7 +171,7 @@ ports {
 `, network, network, network, portHTTP, portSerf, portRPC)
 
 	if nc.LogConfig.LogDir != "" {
-		common += fmt.Sprintf(`log_file="%s"`+"\n", nc.LogConfig.LogDir)
+		common += fmt.Sprintf(`log_file="%s/"`+"\n", nc.LogConfig.LogDir)
 	}
 	if nc.LogConfig.LogRotateBytes != 0 {
 		common += fmt.Sprintf(`log_rotate_bytes="%d"`+"\n", nc.LogConfig.LogRotateBytes)
@@ -209,6 +209,11 @@ func (nc NomadClientConfig) Files() map[string]string {
 client {
   options = {
     "driver.blacklist" = "java"
+  }
+}
+plugin "raw_exec" {
+  config {
+    enabled = true
   }
 }
 `

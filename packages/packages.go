@@ -2,12 +2,10 @@ package packages
 
 import (
 	"fmt"
+	"github.com/hashicorp/go-getter"
 	"io/ioutil"
-	"log"
 	"os"
 	"path/filepath"
-
-	"github.com/hashicorp/go-getter"
 )
 
 var registry = map[string]Upstream{
@@ -26,6 +24,11 @@ var registry = map[string]Upstream{
 		version:   "1.3.2",
 		urlFormat: "https://releases.hashicorp.com/vault/%s/vault_%s_%s_%s.zip",
 	},
+	"prometheus": {
+		name:      "prometheus",
+		version:   "2.16.0",
+		urlFormat: "https://github.com/prometheus/prometheus/releases/download/v%s/prometheus-%s.%s-%s.tar.gz",
+	},
 }
 
 type Upstream struct {
@@ -43,29 +46,26 @@ type Upstream struct {
 // We support two scenarios: either the binary is the sole file directly under
 // dldir and we don't care what it's named, or dldir contains 1+ files of which one
 // matches the name argument, and that's the one we return.
-func dldirToBinary(dldir, name string) string {
-	var source os.FileInfo
+func dldirToBinary(dldir, packageName string) (string, error) {
 	fis, err := ioutil.ReadDir(dldir)
 	if err != nil {
-		log.Fatalf("error reading dir %s: %v", dldir, err)
+		return "", err
 	}
 
-	if len(fis) == 1 {
-		return fis[0].Name()
-	}
-
-	var fnames []string
-	for _, fi := range fis {
-		if fi.Name() == name {
-			return name
+	switch {
+	case len(fis) == 1 && fis[0].IsDir():
+		return dldirToBinary(filepath.Join(dldir, fis[0].Name()), packageName)
+	case len(fis) == 1 && fis[0].Name() == packageName:
+		return filepath.Join(dldir, packageName), nil
+	default:
+		for _, fi := range fis {
+			if fi.Name() == packageName && fi.Mode().IsRegular() && (fi.Mode()&0111) == 0111 {
+				return filepath.Join(dldir, packageName), nil
+			}
 		}
+	}
 
-		fnames = append(fnames, fi.Name())
-	}
-	if source == nil {
-		log.Fatalf("expected exactly one file in %q or a file named %q, but found: %v", dldir, name, fnames)
-	}
-	return ""
+	return "", fmt.Errorf("didn't find %s under %s", packageName, dldir)
 }
 
 // getBinary fetches the binary if it's not already present locally, returning
@@ -76,14 +76,19 @@ func GetBinary(packageName, osName, arch, dldirBase string) (string, error) {
 		return "", fmt.Errorf("unknown package name %q", packageName)
 	}
 
-	name := fmt.Sprintf("%s-%s-%s-%s", o.name, o.version, osName, arch)
-	dldir := filepath.Join(dldirBase, name)
+	fullname := fmt.Sprintf("%s-%s-%s-%s", o.name, o.version, osName, arch)
+	dldir := filepath.Join(dldirBase, fullname)
 	if err := os.MkdirAll(dldir, 0755); err != nil {
 		return "", err
 	}
 
-	binname := filepath.Join(dldir, o.name)
-	_, err := os.Stat(binname)
+	bindir := filepath.Join(dldirBase, "binaries")
+	err := os.MkdirAll(bindir, 0755)
+	if err != nil {
+		return "", fmt.Errorf("error creating bin dir: %w", err)
+	}
+	binname := filepath.Join(bindir, fullname)
+	_, err = os.Stat(binname)
 	if err == nil {
 		// Already downloaded
 		return binname, nil
@@ -98,17 +103,14 @@ func GetBinary(packageName, osName, arch, dldirBase string) (string, error) {
 		return "", fmt.Errorf("go-getter error: %w", err)
 	}
 
-	relbin := dldirToBinary(dldir, o.name)
-	fullbin := filepath.Join(dldir, o.name)
-	if relbin != o.name {
-		if err = os.Rename(filepath.Join(dldir, relbin), fullbin); err != nil {
-			return "", fmt.Errorf("rename binary failed: %w", err)
-		}
+	dlbin, err := dldirToBinary(dldir, packageName)
+	if err != nil {
+		return "", err
 	}
 
-	if err = os.Chmod(fullbin, 0755); err != nil {
-		return "", fmt.Errorf("chmod binary failed: %w", err)
+	if err = os.Link(dlbin, binname); err != nil {
+		return "", fmt.Errorf("link binary failed: %w", err)
 	}
 
-	return fullbin, nil
+	return binname, nil
 }

@@ -67,8 +67,9 @@ func NewTestEnv(t *testing.T, timeout time.Duration) TestEnv {
 
 type ExecTestEnv struct {
 	TestEnv
-	ConsulPath string
-	NomadPath  string
+	ConsulPath     string
+	NomadPath      string
+	PrometheusPath string
 }
 
 func NewExecTestEnv(t *testing.T, timeout time.Duration) ExecTestEnv {
@@ -92,10 +93,20 @@ func NewExecTestEnv(t *testing.T, timeout time.Duration) ExecTestEnv {
 		t.Fatal(err)
 	}
 
+	promPath, err := packages.GetBinary("prometheus", runtime.GOOS, runtime.GOARCH, dldirBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	promAbs, err := filepath.Abs(promPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	return ExecTestEnv{
-		TestEnv:    te,
-		ConsulPath: consulAbs,
-		NomadPath:  nomadAbs,
+		TestEnv:        te,
+		ConsulPath:     consulAbs,
+		NomadPath:      nomadAbs,
+		PrometheusPath: promAbs,
 	}
 }
 
