@@ -176,16 +176,22 @@ func (cc ConsulConfig) Files() map[string]string {
 		files["ca.pem"] = cc.TLS.CA
 		tlsCfg["ca_file"] = "ca.pem"
 	}
-	if len(files) == 0 {
-		return nil
+
+	if len(files) > 0 {
+		tlsCfgBytes, err := jsonutil.EncodeJSON(tlsCfg)
+		if err != nil {
+			log.Fatal(err)
+		}
+		files["tls.json"] = string(tlsCfgBytes)
 	}
 
-	tlsCfgBytes, err := jsonutil.EncodeJSON(tlsCfg)
-	if err != nil {
-		log.Fatal(err)
-	}
-	files["tls.json"] = string(tlsCfgBytes)
-
+	files["common.hcl"] = `
+disable_update_check = true
+telemetry {
+  disable_hostname = true
+  prometheus_retention_time = "10m"
+}
+`
 	return files
 }
 

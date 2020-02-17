@@ -168,6 +168,12 @@ ports {
   serf = %d
   rpc = %d
 }
+telemetry {
+  disable_hostname = true
+  prometheus_metrics = true
+  publish_allocation_metrics = true
+}
+disable_update_check = true
 `, network, network, network, portHTTP, portSerf, portRPC)
 
 	if nc.LogConfig.LogDir != "" {
