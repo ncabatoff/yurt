@@ -6,8 +6,6 @@ import (
 	"github.com/ncabatoff/yurt/util"
 	"path/filepath"
 
-	consulapi "github.com/hashicorp/consul/api"
-	nomadapi "github.com/hashicorp/nomad/api"
 	"github.com/ncabatoff/yurt/pki"
 	"github.com/ncabatoff/yurt/runner"
 	"golang.org/x/sync/errgroup"
@@ -15,12 +13,12 @@ import (
 
 type ConsulClusterConfig interface {
 	// ServerCommands are the commands used to start the servers in the cluster.
-	ServerCommands() []runner.ConsulCommand
+	ServerCommands() []runner.ConsulServerConfig
 	// ClientCommand is the command used to start a client.
-	ClientCommand() runner.ConsulCommand
+	ClientCommand() runner.ConsulConfig
 	// JoinAddrs are the serflan server addresses a Consul agent should join to.
 	JoinAddrs() []string
-	// APIAddrs are the http(s) addresses of the servers.
+	// APIAddrs are the http(s) addresses of the servers in host:port format.
 	APIAddrs() []string
 }
 
@@ -41,8 +39,8 @@ func (c ConsulClusterConfigSingleIP) portIncrement() int {
 	return c.PortIncrement
 }
 
-func (c ConsulClusterConfigSingleIP) ServerCommands() []runner.ConsulCommand {
-	var commands []runner.ConsulCommand
+func (c ConsulClusterConfigSingleIP) ServerCommands() []runner.ConsulServerConfig {
+	var commands []runner.ConsulServerConfig
 	for i, name := range c.ServerNames {
 		command := runner.ConsulServerConfig{
 			ConsulConfig: runner.ConsulConfig{
@@ -65,7 +63,7 @@ func (c ConsulClusterConfigSingleIP) ServerCommands() []runner.ConsulCommand {
 	return commands
 }
 
-func (c ConsulClusterConfigSingleIP) ClientCommand() runner.ConsulCommand {
+func (c ConsulClusterConfigSingleIP) ClientCommand() runner.ConsulConfig {
 	name := "consul-cli-1"
 	cfg := runner.ConsulConfig{
 		NodeName:  name,
@@ -118,8 +116,8 @@ type ConsulClusterConfigFixedIPs struct {
 
 var _ ConsulClusterConfig = ConsulClusterConfigFixedIPs{}
 
-func (c ConsulClusterConfigFixedIPs) ServerCommands() []runner.ConsulCommand {
-	var commands []runner.ConsulCommand
+func (c ConsulClusterConfigFixedIPs) ServerCommands() []runner.ConsulServerConfig {
+	var commands []runner.ConsulServerConfig
 	for i := range c.ConsulServerIPs {
 		name := c.ServerNames[i]
 		command := runner.ConsulServerConfig{
@@ -143,7 +141,7 @@ func (c ConsulClusterConfigFixedIPs) ServerCommands() []runner.ConsulCommand {
 	return commands
 }
 
-func (c ConsulClusterConfigFixedIPs) ClientCommand() runner.ConsulCommand {
+func (c ConsulClusterConfigFixedIPs) ClientCommand() runner.ConsulConfig {
 	name := "consul-cli-1"
 	cfg := runner.ConsulConfig{
 		NodeName:  name,
@@ -187,9 +185,7 @@ type ConsulClusterRunner struct {
 	Config          ConsulClusterConfig
 	servers         []runner.ConsulRunner
 	consulPeerAddrs []string
-	// TODO eliminate clients, they don't belong as part of the cluster
-	clients []runner.ConsulRunner
-	group   *errgroup.Group
+	group           *errgroup.Group
 }
 
 func NewConsulClusterRunner(config ConsulClusterConfig, builder runner.ConsulRunnerBuilder) (*ConsulClusterRunner, error) {
@@ -207,63 +203,52 @@ func (c *ConsulClusterRunner) StartServers(ctx context.Context) error {
 
 	commands := c.Config.ServerCommands()
 	for _, command := range commands {
-		runner, err := c.Builder.MakeConsulRunner(command)
+		r, err := c.Builder.MakeConsulRunner(command)
 		if err != nil {
 			return err
 		}
-		ip, err := runner.Start(ctx)
+		ip, err := r.Start(ctx)
 		if err != nil {
 			return fmt.Errorf("error starting consul server: %w", err)
 		}
-		c.group.Go(runner.Wait)
-		c.servers = append(c.servers, runner)
-		c.consulPeerAddrs = append(c.consulPeerAddrs, fmt.Sprintf("%s:%d", ip, command.Config().Ports.Server))
+		c.group.Go(r.Wait)
+		c.servers = append(c.servers, r)
+		c.consulPeerAddrs = append(c.consulPeerAddrs, fmt.Sprintf("%s:%d", ip, command.Ports.Server))
 	}
 
 	return nil
 }
 
-// TODO make this a func instead of a method; don't manage clients as part of
-// cluster group.
-func (c *ConsulClusterRunner) StartClient(ctx context.Context) error {
-	command := c.Config.ClientCommand()
-	runner, err := c.Builder.MakeConsulRunner(command)
+func StartConsulClient(ctx context.Context, clusterRunner *ConsulClusterRunner) (runner.ConsulRunner, string, error) {
+	command := clusterRunner.Config.ClientCommand()
+	r, err := clusterRunner.Builder.MakeConsulRunner(command)
 	if err != nil {
-		return err
+		return nil, "", err
 	}
-	if _, err := runner.Start(ctx); err != nil {
-		return fmt.Errorf("error starting consul agent: %w", err)
+	host, err := r.Start(ctx)
+	if err != nil {
+		return nil, "", fmt.Errorf("error starting consul agent: %w", err)
 	}
-	c.clients = append(c.clients, runner)
 
-	return nil
-}
-
-func (c *ConsulClusterRunner) Client() (runner.ConsulRunner, error) {
-	if len(c.clients) == 0 {
-		return nil, fmt.Errorf("no clients yet")
-	}
-	return c.clients[0], nil
+	return r, fmt.Sprintf("%s:%d", host, command.Ports.HTTP), nil
 }
 
 func (c *ConsulClusterRunner) WaitReady(ctx context.Context) error {
-	allRunners := append([]runner.ConsulRunner{}, c.servers...)
-	allRunners = append(allRunners, c.clients...)
-	return runner.ConsulRunnersHealthy(ctx, allRunners, c.consulPeerAddrs)
+	return runner.ConsulRunnersHealthy(ctx, c.servers, c.consulPeerAddrs)
 }
 
 func (c *ConsulClusterRunner) WaitExit() error {
 	return c.group.Wait()
 }
 
-func (c *ConsulClusterRunner) APIConfigs() ([]*consulapi.Config, error) {
-	var ret []*consulapi.Config
-	for _, runner := range c.servers {
-		apiCfg, err := runner.ConsulAPIConfig()
+func (c *ConsulClusterRunner) APIConfigs() ([]runner.APIConfig, error) {
+	var ret []runner.APIConfig
+	for _, r := range c.servers {
+		apiCfg, err := r.APIConfig()
 		if err != nil {
 			return nil, err
 		}
-		ret = append(ret, apiCfg)
+		ret = append(ret, *apiCfg)
 	}
 	return ret, nil
 }
@@ -276,9 +261,6 @@ func BuildConsulCluster(ctx context.Context, clusterCfg ConsulClusterConfig, bui
 	if err := consulCluster.StartServers(ctx); err != nil {
 		return nil, err
 	}
-	if err := consulCluster.StartClient(ctx); err != nil {
-		return nil, err
-	}
 	if err := consulCluster.WaitReady(ctx); err != nil {
 		return nil, err
 	}
@@ -287,8 +269,8 @@ func BuildConsulCluster(ctx context.Context, clusterCfg ConsulClusterConfig, bui
 }
 
 type NomadClusterConfig interface {
-	ServerCommands() []runner.NomadCommand
-	ClientCommand() runner.NomadCommand
+	ServerCommands() []runner.NomadServerConfig
+	ClientCommand(consulAddr string) runner.NomadClientConfig
 }
 
 type NomadClusterRunner struct {
@@ -297,21 +279,22 @@ type NomadClusterRunner struct {
 	ConsulAddrs    []string
 	nomadPeerAddrs []string
 	servers        []runner.NomadRunner
-	clients        []runner.NomadRunner
 	group          *errgroup.Group
 }
 
 type NomadClusterConfigSingleIP struct {
-	WorkDir       string
-	ServerNames   []string
-	FirstPorts    runner.NomadPorts
-	PortIncrement int
-	ConsulAddrs   []string
-	TLS           map[string]pki.TLSConfigPEM
+	WorkDir           string
+	ServerNames       []string
+	FirstPorts        runner.NomadPorts
+	PortIncrement     int
+	ConsulServerAddrs []string
+	TLS               map[string]pki.TLSConfigPEM
 }
 
-func (n NomadClusterConfigSingleIP) ServerCommands() []runner.NomadCommand {
-	var commands []runner.NomadCommand
+var _ NomadClusterConfig = NomadClusterConfigSingleIP{}
+
+func (n NomadClusterConfigSingleIP) ServerCommands() []runner.NomadServerConfig {
+	var commands []runner.NomadServerConfig
 	for i, name := range n.ServerNames {
 		command := runner.NomadServerConfig{
 			BootstrapExpect: len(n.ServerNames),
@@ -323,7 +306,7 @@ func (n NomadClusterConfigSingleIP) ServerCommands() []runner.NomadCommand {
 					LogDir: filepath.Join(n.WorkDir, name, "log"),
 				},
 				Ports:      n.FirstPorts.Add(i * n.portIncrement()),
-				ConsulAddr: n.ConsulAddrs[i],
+				ConsulAddr: n.ConsulServerAddrs[i],
 			},
 		}
 		if len(n.TLS) > i {
@@ -334,7 +317,7 @@ func (n NomadClusterConfigSingleIP) ServerCommands() []runner.NomadCommand {
 	return commands
 }
 
-func (n NomadClusterConfigSingleIP) ClientCommand() runner.NomadCommand {
+func (n NomadClusterConfigSingleIP) ClientCommand(consulAddr string) runner.NomadClientConfig {
 	name := "nomad-cli-1"
 	cfg := runner.NomadConfig{
 		NodeName:  name,
@@ -344,7 +327,7 @@ func (n NomadClusterConfigSingleIP) ClientCommand() runner.NomadCommand {
 			LogDir: filepath.Join(n.WorkDir, name, "log"),
 		},
 		Ports:      n.FirstPorts.Add(3 * n.portIncrement()),
-		ConsulAddr: n.ConsulAddrs[3],
+		ConsulAddr: consulAddr,
 	}
 	if len(n.TLS) > 0 {
 		cfg.TLS = n.TLS[name]
@@ -366,18 +349,16 @@ func (n NomadClusterConfigSingleIP) portIncrement() int {
 	return n.PortIncrement
 }
 
-var _ NomadClusterConfig = NomadClusterConfigSingleIP{}
-
 type NomadClusterConfigFixedIPs struct {
 	util.NetworkConfig
-	WorkDir        string
-	ServerNames    []string
-	NomadServerIPs []string
-	ConsulAddrs    []string
-	TLS            map[string]pki.TLSConfigPEM
+	WorkDir           string
+	ServerNames       []string
+	NomadServerIPs    []string
+	ConsulServerAddrs []string
+	TLS               map[string]pki.TLSConfigPEM
 }
 
-func (n NomadClusterConfigFixedIPs) ClientCommand() runner.NomadCommand {
+func (n NomadClusterConfigFixedIPs) ClientCommand(consulAddr string) runner.NomadClientConfig {
 	name := "nomad-cli-1"
 	cfg := runner.NomadConfig{
 		NodeName:      name,
@@ -388,7 +369,7 @@ func (n NomadClusterConfigFixedIPs) ClientCommand() runner.NomadCommand {
 			LogDir: filepath.Join(n.WorkDir, name, "log"),
 		},
 		Ports:      runner.DefNomadPorts(),
-		ConsulAddr: n.ConsulAddrs[3],
+		ConsulAddr: consulAddr,
 	}
 	if len(n.TLS) > 0 {
 		cfg.TLS = n.TLS[name]
@@ -405,8 +386,8 @@ func (n NomadClusterConfigFixedIPs) ClientCommand() runner.NomadCommand {
 
 var _ NomadClusterConfig = NomadClusterConfigFixedIPs{}
 
-func (n NomadClusterConfigFixedIPs) ServerCommands() []runner.NomadCommand {
-	var commands []runner.NomadCommand
+func (n NomadClusterConfigFixedIPs) ServerCommands() []runner.NomadServerConfig {
+	var commands []runner.NomadServerConfig
 	for i, name := range n.ServerNames {
 		command := runner.NomadServerConfig{
 			BootstrapExpect: len(n.ServerNames),
@@ -418,7 +399,7 @@ func (n NomadClusterConfigFixedIPs) ServerCommands() []runner.NomadCommand {
 					LogDir: filepath.Join(n.WorkDir, name, "log"),
 				},
 				NetworkConfig: n.NetworkConfig,
-				ConsulAddr:    n.ConsulAddrs[i],
+				ConsulAddr:    n.ConsulServerAddrs[i],
 				Ports:         runner.DefNomadPorts(),
 				TLS:           n.TLS[name],
 			},
@@ -440,51 +421,49 @@ func (n *NomadClusterRunner) StartServers(ctx context.Context) error {
 
 	commands := n.Config.ServerCommands()
 	for _, command := range commands {
-		runner, err := n.Builder.MakeNomadRunner(command)
+		r, err := n.Builder.MakeNomadRunner(command)
 		if err != nil {
 			return err
 		}
-		ip, err := runner.Start(ctx)
+		ip, err := r.Start(ctx)
 		if err != nil {
 			return err
 		}
-		serverAddr := fmt.Sprintf("%s:%d", ip, command.Config().Ports.RPC)
+		serverAddr := fmt.Sprintf("%s:%d", ip, command.Ports.RPC)
 		n.nomadPeerAddrs = append(n.nomadPeerAddrs, serverAddr)
-		n.group.Go(runner.Wait)
-		n.servers = append(n.servers, runner)
+		n.group.Go(r.Wait)
+		n.servers = append(n.servers, r)
 	}
 
 	return nil
 }
 
-func (n *NomadClusterRunner) StartClient(ctx context.Context) error {
-	command := n.Config.ClientCommand()
-	runner, err := n.Builder.MakeNomadRunner(command)
+func StartNomadClient(ctx context.Context, clusterRunner *NomadClusterRunner, consulAddr string) (runner.NomadRunner, string, error) {
+	command := clusterRunner.Config.ClientCommand(consulAddr)
+	r, err := clusterRunner.Builder.MakeNomadRunner(command)
 	if err != nil {
-		return err
+		return nil, "", err
 	}
-	if _, err := runner.Start(ctx); err != nil {
-		return err
+	host, err := r.Start(ctx)
+	if err != nil {
+		return nil, "", fmt.Errorf("error starting nomad agent: %w", err)
 	}
-	n.clients = append(n.clients, runner)
 
-	return nil
+	return r, fmt.Sprintf("%s:%d", host, command.Ports.HTTP), nil
 }
 
 func (n *NomadClusterRunner) WaitReady(ctx context.Context) error {
-	allRunners := append([]runner.NomadRunner{}, n.servers...)
-	allRunners = append(allRunners, n.clients...)
-	return runner.NomadRunnersHealthy(ctx, allRunners, n.nomadPeerAddrs)
+	return runner.NomadRunnersHealthy(ctx, n.servers, n.nomadPeerAddrs)
 }
 
-func (n *NomadClusterRunner) APIConfigs() ([]*nomadapi.Config, error) {
-	var ret []*nomadapi.Config
-	for _, runner := range n.servers {
-		apiCfg, err := runner.NomadAPIConfig()
+func (n *NomadClusterRunner) APIConfigs() ([]runner.APIConfig, error) {
+	var ret []runner.APIConfig
+	for _, r := range n.servers {
+		apiCfg, err := r.APIConfig()
 		if err != nil {
 			return nil, err
 		}
-		ret = append(ret, apiCfg)
+		ret = append(ret, *apiCfg)
 	}
 	return ret, nil
 }
@@ -495,9 +474,6 @@ func BuildNomadCluster(ctx context.Context, clusterCfg NomadClusterConfig, build
 		return nil, err
 	}
 	if err := nomadCluster.StartServers(ctx); err != nil {
-		return nil, err
-	}
-	if err := nomadCluster.StartClient(ctx); err != nil {
 		return nil, err
 	}
 	if err := nomadCluster.WaitReady(ctx); err != nil {

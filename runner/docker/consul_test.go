@@ -44,7 +44,7 @@ func SingleConsulServerConfig(netConf util.NetworkConfig) runner.ConsulServerCon
 	}}
 }
 
-func testConsulDockerTLS(t *testing.T, te testutil.DockerTestEnv, cfg runner.ConsulServerConfig, ca *pki.CertificateAuthority) *ConsulDockerRunner {
+func testConsulDockerTLS(t *testing.T, te testutil.DockerTestEnv, cfg runner.ConsulServerConfig, ca *pki.CertificateAuthority) *DockerRunner {
 	ip := te.NextIP()
 	tls, err := ca.ConsulServerTLS(te.Ctx, ip, "10m")
 	if err != nil {
@@ -54,12 +54,12 @@ func testConsulDockerTLS(t *testing.T, te testutil.DockerTestEnv, cfg runner.Con
 	return testConsulDocker(t, te, ip, cfg)
 }
 
-func testConsulDocker(t *testing.T, te testutil.DockerTestEnv, ip string, cfg runner.ConsulServerConfig) *ConsulDockerRunner {
+func testConsulDocker(t *testing.T, te testutil.DockerTestEnv, ip string, cfg runner.ConsulServerConfig) *DockerRunner {
 	cfg.ConfigDir = filepath.Join(te.TmpDir, "consul/config")
 	cfg.DataDir = filepath.Join(te.TmpDir, "consul/data")
 	cfg.LogConfig.LogDir = filepath.Join(te.TmpDir, "consul/log")
 	cfg.JoinAddrs = []string{fmt.Sprintf("%s:%d", ip, cfg.Ports.SerfLAN)}
-	r, err := NewConsulDockerRunner(te.Docker, imageConsul, ip, cfg)
+	r, err := NewDockerRunner(te.Docker, imageConsul, ip, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

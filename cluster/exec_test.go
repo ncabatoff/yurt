@@ -3,7 +3,6 @@ package cluster
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -94,63 +93,78 @@ func TestNomadExecCluster(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	consulClient, err := consulCluster.Client()
-	if err != nil {
-		t.Fatal(err)
-	}
-	clientPorts := consulClient.Config().Ports
 
 	cluster, err := BuildNomadCluster(te.Ctx, NomadClusterConfigSingleIP{
-		WorkDir:     te.TmpDir,
-		ServerNames: []string{"nomad-srv-1", "nomad-srv-2", "nomad-srv-3"},
-		FirstPorts:  nextNomadBatch(4),
-		ConsulAddrs: append(consulCluster.Config.APIAddrs(), fmt.Sprintf("localhost:%d", clientPorts.HTTP)),
+		WorkDir:           te.TmpDir,
+		ServerNames:       []string{"nomad-srv-1", "nomad-srv-2", "nomad-srv-3"},
+		FirstPorts:        nextNomadBatch(4),
+		ConsulServerAddrs: consulCluster.Config.APIAddrs(),
 	}, &exec.NomadExecBuilder{BinPath: te.NomadPath})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	ccfg, err := consulCluster.servers[0].ConsulAPIConfig()
+	ccfg, err := consulCluster.servers[0].APIConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = open.Run(fmt.Sprintf("%s://%s", ccfg.Scheme, ccfg.Address))
+	// Open the first consul node's UI in the local browser, best-effort
+	_ = open.Run(ccfg.Address.String())
 
-	consul, err := consulClient.ConsulAPI()
+	// Use the consul client node's API port
+	consul, err := consulapi.NewClient(runner.ConsulAPIConfig(ccfg))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	ncfg, err := cluster.servers[0].NomadAPIConfig()
+	ncfg, err := cluster.servers[0].APIConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
-	open.Run(ncfg.Address)
+	// Open the first nomad server's UI in the local browser, best-effort
+	open.Run(ncfg.Address.String())
 
-	nomad, err := cluster.clients[0].NomadAPI()
+	ctx := context.Background()
+	consulClient, consulClientAddr, err := StartConsulClient(ctx, consulCluster)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = runner.ConsulRunnersHealthy(ctx, []runner.ConsulRunner{consulClient}, consulCluster.consulPeerAddrs)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	nomadClient, _, err := StartNomadClient(ctx, cluster, consulClientAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = runner.NomadRunnersHealthy(ctx, []runner.NomadRunner{nomadClient}, cluster.nomadPeerAddrs)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Use the first nomad client node's API port to interact with the
+	// cluster job interface.
+	nomad, err := runner.NomadRunnerToAPI(nomadClient)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	var consulTargets, nomadTargets []string
 	for _, c := range consulCluster.servers {
-		ccfg, err := c.ConsulAPIConfig()
+		ccfg, err := c.APIConfig()
 		if err != nil {
 			t.Fatal(err)
 		}
-		consulTargets = append(consulTargets, fmt.Sprintf("'%s'", ccfg.Address))
+		consulTargets = append(consulTargets, fmt.Sprintf("'%s'", ccfg.Address.Host))
 	}
 
 	for _, c := range cluster.servers {
-		ncfg, err := c.NomadAPIConfig()
+		ncfg, err := c.APIConfig()
 		if err != nil {
 			t.Fatal(err)
 		}
-		u, err := url.Parse(ncfg.Address)
-		if err != nil {
-			t.Fatal(err)
-		}
-		nomadTargets = append(nomadTargets, fmt.Sprintf("'%s'", u.Host))
+		nomadTargets = append(nomadTargets, fmt.Sprintf("'%s'", ncfg.Address.Host))
 	}
 
 	pcfg := fmt.Sprintf(`
@@ -190,6 +204,7 @@ func TestNomadExecCluster(t *testing.T) {
     replacement: 'nomad_raft_replication_${1}${3}'
 
 `, strings.Join(consulTargets, ", "), strings.Join(nomadTargets, ", "))
+
 	testJobs(t, te.Ctx, consul, nomad, fmt.Sprintf(execJobHCL, pcfg, te.PrometheusPath))
 }
 
@@ -338,11 +353,6 @@ func TestNomadExecClusterTLS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	consulClient, err := consulCluster.Client()
-	if err != nil {
-		t.Fatal(err)
-	}
-	clientPorts := consulClient.Config().Ports
 
 	certs := make(map[string]pki.TLSConfigPEM)
 	for i := 0; i < 4; i++ {
@@ -354,11 +364,11 @@ func TestNomadExecClusterTLS(t *testing.T) {
 	}
 
 	_, err = BuildNomadCluster(te.Ctx, NomadClusterConfigSingleIP{
-		WorkDir:     filepath.Join(te.TmpDir, "nomad"),
-		ServerNames: names[:3],
-		FirstPorts:  nextNomadBatch(4),
-		ConsulAddrs: append(consulCluster.Config.APIAddrs(), fmt.Sprintf("localhost:%d", clientPorts.HTTP)),
-		TLS:         certs,
+		WorkDir:           filepath.Join(te.TmpDir, "nomad"),
+		ServerNames:       names[:3],
+		FirstPorts:        nextNomadBatch(4),
+		ConsulServerAddrs: consulCluster.Config.APIAddrs(),
+		TLS:               certs,
 	}, &exec.NomadExecBuilder{BinPath: te.NomadPath})
 	if err != nil {
 		t.Fatal(err)

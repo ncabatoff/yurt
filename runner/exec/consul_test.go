@@ -41,7 +41,7 @@ func SingleConsulServerConfig() runner.ConsulServerConfig {
 	}}
 }
 
-func testConsulExecTLS(t *testing.T, te testutil.ExecTestEnv, ca *pki.CertificateAuthority, cfg runner.ConsulServerConfig) *ConsulExecRunner {
+func testConsulExecTLS(t *testing.T, te testutil.ExecTestEnv, ca *pki.CertificateAuthority, cfg runner.ConsulServerConfig) *ExecRunner {
 	tls, err := ca.ConsulServerTLS(te.Ctx, "127.0.0.1", "10m")
 	if err != nil {
 		t.Fatal(err)
@@ -50,11 +50,11 @@ func testConsulExecTLS(t *testing.T, te testutil.ExecTestEnv, ca *pki.Certificat
 	return testConsulExec(t, te, cfg)
 }
 
-func testConsulExec(t *testing.T, te testutil.ExecTestEnv, cfg runner.ConsulServerConfig) *ConsulExecRunner {
-	cfg.ConfigDir = filepath.Join(te.TmpDir, "consul/config")
-	cfg.DataDir = filepath.Join(te.TmpDir, "consul/data")
-	cfg.LogConfig.LogDir = filepath.Join(te.TmpDir, "consul/log")
-	r, _ := NewConsulExecRunner(te.ConsulPath, cfg)
+func testConsulExec(t *testing.T, te testutil.ExecTestEnv, cfg runner.ConsulServerConfig) *ExecRunner {
+	cfg.ConfigDir = filepath.Join(te.TmpDir, "config")
+	cfg.DataDir = filepath.Join(te.TmpDir, "data")
+	cfg.LogConfig.LogDir = filepath.Join(te.TmpDir, "log")
+	r, _ := NewExecRunner(te.ConsulPath, cfg)
 	expectedPeerAddrs := []string{fmt.Sprintf("127.0.0.1:%d", cfg.Ports.Server)}
 	if err := runner.ConsulRunnersHealthyNow([]runner.ConsulRunner{r}, expectedPeerAddrs); err == nil {
 		t.Fatal("API healthy before process starts - is there an orphan from a previous test running?")

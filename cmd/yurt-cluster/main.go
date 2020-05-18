@@ -133,7 +133,7 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		u := fmt.Sprintf("%s://%s", cfgs[0].Scheme, cfgs[0].Address)
+		u := fmt.Sprintf(cfgs[0].Address.String())
 		if err := open.Run(u); err != nil {
 			log.Printf("error opening URL %s: %v", u, err)
 		}
@@ -163,7 +163,7 @@ func main() {
 			log.Fatal(err)
 		}
 		u := cfgs[0].Address
-		if err := open.Run(u); err != nil {
+		if err := open.Run(u.String()); err != nil {
 			log.Printf("error opening URL %s: %v", u, err)
 		}
 	}
@@ -262,14 +262,11 @@ func nomadClusterExec(ctx context.Context, workDir string, nodes int, nomadBin s
 	}
 	serverNames[nodes] = "nomad-cli-1"
 
-	client, _ := cc.Client()
-	clientPorts := client.Config().Ports
-	clientAddr := fmt.Sprintf("localhost:%d", clientPorts.HTTP)
 	clusterCfg := cluster.NomadClusterConfigSingleIP{
-		WorkDir:     workDir,
-		ServerNames: serverNames[:nodes],
-		FirstPorts:  runner.SeqNomadPorts(*firstPort),
-		ConsulAddrs: append(cc.Config.APIAddrs(), clientAddr),
+		WorkDir:           workDir,
+		ServerNames:       serverNames[:nodes],
+		FirstPorts:        runner.SeqNomadPorts(*firstPort),
+		ConsulServerAddrs: cc.Config.APIAddrs(),
 	}
 	*firstPort += 3*nodes + 3
 
@@ -282,7 +279,6 @@ func nomadClusterExec(ctx context.Context, workDir string, nodes int, nomadBin s
 			}
 			clusterCfg.TLS[name] = *cert
 		}
-		clusterCfg.ConsulAddrs[nodes] = fmt.Sprintf("localhost:%d", clientPorts.HTTP)
 	}
 
 	return cluster.BuildNomadCluster(ctx, clusterCfg,
@@ -303,17 +299,11 @@ func nomadClusterDocker(ctx context.Context, workDir string, nodes int, cli *doc
 		ips = append(ips, serverIP.String())
 	}
 
-	consulClient, err := cc.Client()
-	if err != nil {
-		return nil, err
-	}
-	port := runner.DefConsulPorts().HTTP
-	ip := consulClient.(*docker2.ConsulDockerRunner).IP
 	clusterCfg := cluster.NomadClusterConfigFixedIPs{
-		NetworkConfig: network,
-		WorkDir:       workDir,
-		ServerNames:   names[:nodes],
-		ConsulAddrs:   append(cc.Config.APIAddrs(), fmt.Sprintf("%s:%d", ip, port)),
+		NetworkConfig:     network,
+		WorkDir:           workDir,
+		ServerNames:       names[:nodes],
+		ConsulServerAddrs: cc.Config.APIAddrs(),
 	}
 
 	if ca != nil {

@@ -18,7 +18,7 @@ func TestNomadExec(t *testing.T) {
 	defer te.Cleanup()
 
 	consulRunner := testConsulExec(t, te, SingleConsulServerConfig())
-	testNomadExec(t, te, SingleNomadServerConfig(consulRunner.Config().Ports.HTTP))
+	testNomadExec(t, te, SingleNomadServerConfig(consulRunner.Config().APIPort))
 }
 
 // TestNomadExecTLS tests a single node Nomad cluster talking to a single node
@@ -33,7 +33,7 @@ func TestNomadExecTLS(t *testing.T) {
 		t.Fatal(err)
 	}
 	consulRunner := testConsulExec(t, te, SingleConsulServerConfig())
-	testNomadExecTLS(t, te, ca, SingleNomadServerConfig(consulRunner.Config().Ports.HTTP))
+	testNomadExecTLS(t, te, ca, SingleNomadServerConfig(consulRunner.Config().APIPort))
 }
 
 func SingleNomadServerConfig(consulPort int) runner.NomadServerConfig {
@@ -59,7 +59,10 @@ func testNomadExec(t *testing.T, te testutil.ExecTestEnv, cfg runner.NomadServer
 	cfg.ConfigDir = filepath.Join(te.TmpDir, "config")
 	cfg.DataDir = filepath.Join(te.TmpDir, "data")
 	cfg.LogConfig = runner.LogConfig{LogDir: filepath.Join(te.TmpDir, "log")}
-	r, _ := NewNomadExecRunner(te.NomadPath, cfg)
+	r, err := NewExecRunner(te.NomadPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	ip, err := r.Start(te.Ctx)
 	if err != nil {

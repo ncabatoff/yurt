@@ -12,7 +12,7 @@ import (
 var Vault *pki.VaultRunner
 
 func TestMain(m *testing.M) {
-	v, err := pki.NewVaultRunner("", 20000)
+	v, err := pki.NewVaultRunner("", 28200)
 	if err != nil {
 		log.Fatal(err)
 	}

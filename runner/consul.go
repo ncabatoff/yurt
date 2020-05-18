@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/hashicorp/consul/api"
 	"github.com/hashicorp/vault/sdk/helper/jsonutil"
 	"github.com/ncabatoff/yurt/pki"
 	"github.com/ncabatoff/yurt/util"
@@ -12,11 +11,7 @@ import (
 
 // ConsulRunner is used to create a Consul node and talk to it.
 type ConsulRunner interface {
-	Runner
-	// TODO replace this with access to only port info?
-	Config() ConsulConfig
-	ConsulAPI() (*api.Client, error)
-	ConsulAPIConfig() (*api.Config, error)
+	APIRunner
 }
 
 // ConsulRunnerBuilder is a factory used by clusters to create nodes.
@@ -26,10 +21,7 @@ type ConsulRunnerBuilder interface {
 
 // ConsulCommand defines how to create a Consul node
 type ConsulCommand interface {
-	Command() []string
-	Files() map[string]string
-	Config() ConsulConfig
-	WithDirs(config, data, log string) ConsulCommand
+	Command
 }
 
 type ConsulPorts struct {
@@ -77,32 +69,27 @@ func (c ConsulPorts) Add(inc int) ConsulPorts {
 
 // ConsulConfig describes how to run a single Consul agent.
 type ConsulConfig struct {
+	// NodeName names the consul node; not required if using a non-localhost network.
+	NodeName      string
 	NetworkConfig util.NetworkConfig
+
+	// Non-default port listener settings can be provided, and must be if
+	// there's no networking config (meaning everyone listens on localhost.)
+	Ports ConsulPorts
+
 	// JoinAddrs specifies the addresses of the Consul servers.  If they have
 	// a :port suffix, it should be that of the SerfLAN port.
 	JoinAddrs []string
-	// NodeName names the consul node; not required if using a non-localhost network.
-	NodeName string
 
 	// LogConfig is optional, if not specified stdout/stderr are used.
 	LogConfig LogConfig
 	DataDir   string
 	ConfigDir string
 
-	// Non-default port listener settings can be provided, and must be if
-	// there's no networking config (meaning everyone listens on localhost.)
-	Ports ConsulPorts
-
 	TLS pki.TLSConfigPEM
 }
 
-// ConsulServerConfig is a superset of ConsulConfig, containing configuration only
-// needed by servers.
-type ConsulServerConfig struct {
-	ConsulConfig
-}
-
-func (cc ConsulConfig) Command() []string {
+func (cc ConsulConfig) Args() []string {
 	args := []string{"agent",
 		fmt.Sprintf("-data-dir=%s", cc.DataDir),
 		fmt.Sprintf("-retry-interval=1s"),
@@ -156,6 +143,24 @@ func (cc ConsulConfig) Command() []string {
 	return args
 }
 
+func (cc ConsulConfig) Config() Config {
+	return Config{
+		LogDir:        cc.LogConfig.LogDir,
+		DataDir:       cc.DataDir,
+		ConfigDir:     cc.ConfigDir,
+		NetworkConfig: cc.NetworkConfig,
+		NodeName:      cc.NodeName,
+		APIPort:       cc.Ports.HTTP,
+		TLS:           cc.TLS,
+	}
+}
+
+func (cc ConsulConfig) Env() []string {
+	// This is only needed for Docker Consul, but it doesn't hurt to have it
+	// everywhere.
+	return []string{"CONSUL_DISABLE_PERM_MGMT=1"}
+}
+
 func (cc ConsulConfig) Files() map[string]string {
 	tlsCfg := map[string]interface{}{
 		"verify_incoming_rpc":    true,
@@ -195,17 +200,19 @@ telemetry {
 	return files
 }
 
-func (cc ConsulConfig) Config() ConsulConfig {
-	return cc
-}
-
-func (cc ConsulConfig) WithDirs(config, data, log string) ConsulCommand {
+func (cc ConsulConfig) WithDirs(config, data, log string) Command {
 	cc.ConfigDir, cc.DataDir, cc.LogConfig.LogDir = config, data, log
 	return cc
 }
 
-func (cc ConsulServerConfig) Command() []string {
-	return append(cc.ConsulConfig.Command(), "-ui", "-server",
+// ConsulServerConfig is a superset of ConsulConfig, containing configuration only
+// needed by servers.
+type ConsulServerConfig struct {
+	ConsulConfig
+}
+
+func (cc ConsulServerConfig) Args() []string {
+	return append(cc.ConsulConfig.Args(), "-ui", "-server",
 		"-bootstrap-expect", fmt.Sprintf("%d", len(cc.JoinAddrs)))
 }
 
@@ -213,7 +220,7 @@ func (cc ConsulServerConfig) Files() map[string]string {
 	return cc.ConsulConfig.Files()
 }
 
-func (cc ConsulServerConfig) WithDirs(config, data, log string) ConsulCommand {
+func (cc ConsulServerConfig) WithDirs(config, data, log string) Command {
 	cc.ConfigDir, cc.DataDir, cc.LogConfig.LogDir = config, data, log
 	return cc
 }

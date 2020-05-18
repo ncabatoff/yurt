@@ -42,7 +42,7 @@ func testca(t *testing.T, timeout time.Duration) *testenv {
 	}
 	ca, err := NewCertificateAuthority(v.Cli)
 	if err != nil {
-		return nil
+		t.Fatal(err)
 	}
 	return &testenv{
 		tmpdir:  tmpdir,

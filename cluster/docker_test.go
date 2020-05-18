@@ -1,14 +1,13 @@
 package cluster
 
 import (
-	"fmt"
+	"context"
 	"math/rand"
 	"net"
 	"testing"
 	"time"
 
 	"github.com/ncabatoff/yurt/pki"
-	"github.com/ncabatoff/yurt/runner"
 	"github.com/ncabatoff/yurt/runner/docker"
 	"github.com/ncabatoff/yurt/testutil"
 )
@@ -121,25 +120,34 @@ func TestNomadDockerCluster(t *testing.T) {
 	te := testutil.NewDockerTestEnv(t, 30*time.Second)
 	defer te.Cleanup()
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	consulCluster, err := threeNodeConsulDocker(t, te)
 	if err != nil {
 		t.Fatal(err)
 	}
-	consulClient, err := consulCluster.Client()
+	// consulClientAddr is the real host:port of consul client agent, rather
+	// than the port mapped one API address we'd interact with
+	_, consulClientAddr, err := StartConsulClient(ctx, consulCluster)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ip := consulClient.(*docker.ConsulDockerRunner).IP
 
-	_, err = BuildNomadCluster(te.Ctx, NomadClusterConfigFixedIPs{
-		NetworkConfig: te.NetConf,
-		WorkDir:       te.TmpDir,
-		ServerNames:   []string{"nomad-srv-1", "nomad-srv-2", "nomad-srv-3"},
-		ConsulAddrs:   append(consulCluster.Config.APIAddrs(), fmt.Sprintf("%s:%d", ip, runner.DefConsulPorts().HTTP)),
+	nomadCluster, err := BuildNomadCluster(te.Ctx, NomadClusterConfigFixedIPs{
+		NetworkConfig:     te.NetConf,
+		WorkDir:           te.TmpDir,
+		ServerNames:       []string{"nomad-srv-1", "nomad-srv-2", "nomad-srv-3"},
+		ConsulServerAddrs: consulCluster.Config.APIAddrs(),
 	}, &docker.NomadDockerBuilder{
 		DockerAPI: te.Docker,
 		Image:     imageNomad,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = StartNomadClient(ctx, nomadCluster, consulClientAddr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,19 +245,14 @@ func threeNodeNomadDockerTLS(t *testing.T, te testutil.DockerTestEnv, ca *pki.Ce
 		certs[names[i]] = *tls
 	}
 
-	consulClient, err := consulCluster.Client()
-	if err != nil {
-		t.Fatal(err)
-	}
-	ip := consulClient.(*docker.ConsulDockerRunner).IP
 	return BuildNomadCluster(te.Ctx,
 		NomadClusterConfigFixedIPs{
-			NetworkConfig:  te.NetConf,
-			WorkDir:        te.TmpDir,
-			ServerNames:    names[:3],
-			NomadServerIPs: ips,
-			ConsulAddrs:    append(consulCluster.Config.APIAddrs(), fmt.Sprintf("%s:%d", ip, runner.DefConsulPorts().HTTP)),
-			TLS:            certs,
+			NetworkConfig:     te.NetConf,
+			WorkDir:           te.TmpDir,
+			ServerNames:       names[:3],
+			NomadServerIPs:    ips,
+			ConsulServerAddrs: consulCluster.Config.APIAddrs(),
+			TLS:               certs,
 		},
 		&docker.NomadDockerServerBuilder{
 			DockerAPI: te.Docker,

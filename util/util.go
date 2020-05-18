@@ -56,7 +56,7 @@ func WriteConfig(dir, name, contents string) error {
 	} else {
 		//log.Print(path, contents)
 	}
-	return ioutil.WriteFile(path, []byte(contents), 0600)
+	return ioutil.WriteFile(path, []byte(contents), 0644)
 }
 
 type NetworkConfig struct {

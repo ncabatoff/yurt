@@ -4,23 +4,17 @@ import (
 	"fmt"
 	"log"
 
-	nomadapi "github.com/hashicorp/nomad/api"
 	"github.com/hashicorp/vault/sdk/helper/jsonutil"
 	"github.com/ncabatoff/yurt/pki"
 	"github.com/ncabatoff/yurt/util"
 )
 
 type NomadCommand interface {
-	Command() []string
-	Files() map[string]string
-	Config() NomadConfig
-	WithDirs(config, data, log string) NomadCommand
+	Command
 }
 
 type NomadRunner interface {
-	Runner
-	NomadAPI() (*nomadapi.Client, error)
-	NomadAPIConfig() (*nomadapi.Config, error)
+	APIRunner
 }
 
 // NomadRunnerBuilder is a factory used by clusters to create nodes.
@@ -56,28 +50,12 @@ type NomadConfig struct {
 	LogConfig     LogConfig
 	DataDir       string
 	ConfigDir     string
-	ConsulAddr    string
-	TLS           pki.TLSConfigPEM
+	// ConsulAddr is the address of the (normally local) consul agent, format is Host:Port
+	ConsulAddr string
+	TLS        pki.TLSConfigPEM
 }
 
-func (nc NomadConfig) WithDirs(config, data, log string) NomadCommand {
-	nc.ConfigDir, nc.DataDir, nc.LogConfig.LogDir = config, data, log
-	return nc
-}
-
-var _ NomadCommand = NomadConfig{}
-
-type NomadServerConfig struct {
-	NomadConfig
-	BootstrapExpect int
-	// TLS certs + private keys
-}
-
-type NomadClientConfig struct {
-	NomadConfig
-}
-
-func (nc NomadConfig) Command() []string {
+func (nc NomadConfig) Args() []string {
 	args := []string{"agent",
 		fmt.Sprintf("-data-dir=%s", nc.DataDir),
 		fmt.Sprintf("-retry-interval=1s"),
@@ -101,6 +79,22 @@ func (nc NomadConfig) Command() []string {
 	}
 
 	return args
+}
+
+func (nc NomadConfig) Config() Config {
+	return Config{
+		LogDir:        nc.LogConfig.LogDir,
+		DataDir:       nc.DataDir,
+		ConfigDir:     nc.ConfigDir,
+		NetworkConfig: nc.NetworkConfig,
+		NodeName:      nc.NodeName,
+		APIPort:       nc.Ports.HTTP,
+		TLS:           nc.TLS,
+	}
+}
+
+func (nc NomadConfig) Env() []string {
+	return nil
 }
 
 func (nc NomadConfig) Files() map[string]string {
@@ -190,22 +184,27 @@ disable_update_check = true
 	return files
 }
 
-func (nc NomadConfig) Config() NomadConfig {
-	return nc
+type NomadServerConfig struct {
+	NomadConfig
+	BootstrapExpect int
 }
 
-func (nc NomadServerConfig) Command() []string {
-	return append(nc.NomadConfig.Command(), "-server",
+func (nc NomadServerConfig) Args() []string {
+	return append(nc.NomadConfig.Args(), "-server",
 		fmt.Sprintf("-bootstrap-expect=%d", nc.BootstrapExpect))
 }
 
-func (nc NomadServerConfig) WithDirs(config, data, log string) NomadCommand {
+func (nc NomadServerConfig) WithDirs(config, data, log string) Command {
 	nc.ConfigDir, nc.DataDir, nc.LogConfig.LogDir = config, data, log
 	return nc
 }
 
-func (nc NomadClientConfig) Command() []string {
-	return append(nc.NomadConfig.Command(), "-client")
+type NomadClientConfig struct {
+	NomadConfig
+}
+
+func (nc NomadClientConfig) Args() []string {
+	return append(nc.NomadConfig.Args(), "-client")
 }
 
 func (nc NomadClientConfig) Files() map[string]string {
@@ -226,7 +225,7 @@ plugin "raw_exec" {
 	return files
 }
 
-func (nc NomadClientConfig) WithDirs(config, data, log string) NomadCommand {
+func (nc NomadClientConfig) WithDirs(config, data, log string) Command {
 	nc.ConfigDir, nc.DataDir, nc.LogConfig.LogDir = config, data, log
 	return nc
 }

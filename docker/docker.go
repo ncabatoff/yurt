@@ -8,14 +8,14 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/client"
+	dockerapi "github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 	"io"
 	"io/ioutil"
 	"log"
 )
 
-func SetupNetwork(ctx context.Context, cli *client.Client, netName, cidr string) (string, error) {
+func SetupNetwork(ctx context.Context, cli *dockerapi.Client, netName, cidr string) (string, error) {
 	netResources, err := cli.NetworkList(ctx, types.NetworkListOptions{})
 	if err != nil {
 		return "", err
@@ -39,7 +39,7 @@ func SetupNetwork(ctx context.Context, cli *client.Client, netName, cidr string)
 	return id, nil
 }
 
-func createNetwork(ctx context.Context, cli *client.Client, netName, cidr string) (string, error) {
+func createNetwork(ctx context.Context, cli *dockerapi.Client, netName, cidr string) (string, error) {
 	resp, err := cli.NetworkCreate(ctx, netName, types.NetworkCreate{
 		CheckDuplicate: true,
 		Driver:         "bridge",
@@ -61,7 +61,7 @@ func createNetwork(ctx context.Context, cli *client.Client, netName, cidr string
 	return resp.ID, nil
 }
 
-func Wait(api *client.Client, containerID string) error {
+func Wait(api *dockerapi.Client, containerID string) error {
 	chanWaitOK, chanErr := api.ContainerWait(context.Background(),
 		containerID, container.WaitConditionNotRunning)
 	select {
@@ -75,7 +75,7 @@ func Wait(api *client.Client, containerID string) error {
 	return nil
 }
 
-func CleanupContainer(ctx context.Context, cli *client.Client, containerID string) error {
+func CleanupContainer(ctx context.Context, cli *dockerapi.Client, containerID string) error {
 	err := cli.ContainerStop(ctx, containerID, nil)
 	if err != nil {
 		return err
@@ -93,8 +93,7 @@ func ContainerIP(cont types.ContainerJSON, netName string) (string, error) {
 	return cont.NetworkSettings.Networks[netName].IPAddress, nil
 }
 
-type Runner struct {
-	DockerAPI       *client.Client
+type RunOptions struct {
 	ContainerConfig *container.Config
 	ContainerName   string
 	NetName         string
@@ -103,70 +102,70 @@ type Runner struct {
 	Mounts          []mount.Mount
 }
 
-func (d *Runner) Start(ctx context.Context) (*types.ContainerJSON, error) {
+func Start(ctx context.Context, client *dockerapi.Client, opts RunOptions) (*types.ContainerJSON, error) {
 	hostConfig := &container.HostConfig{
 		PublishAllPorts: true,
-		Mounts:          d.Mounts,
+		Mounts:          opts.Mounts,
 		AutoRemove:      true,
 	}
 
 	networkingConfig := &network.NetworkingConfig{}
-	switch d.NetName {
+	switch opts.NetName {
 	case "":
 	case "host":
 		hostConfig.NetworkMode = "host"
 	default:
 		es := &network.EndpointSettings{}
-		if len(d.IP) != 0 {
+		if len(opts.IP) != 0 {
 			es.IPAMConfig = &network.EndpointIPAMConfig{
-				IPv4Address: d.IP,
+				IPv4Address: opts.IP,
 			}
 		}
 		networkingConfig.EndpointsConfig = map[string]*network.EndpointSettings{
-			d.NetName: es,
+			opts.NetName: es,
 		}
 	}
 
 	// best-effort pull
-	resp, _ := d.DockerAPI.ImageCreate(ctx, d.ContainerConfig.Image, types.ImageCreateOptions{})
+	resp, _ := client.ImageCreate(ctx, opts.ContainerConfig.Image, types.ImageCreateOptions{})
 	if resp != nil {
 		_, _ = ioutil.ReadAll(resp)
 	}
 
-	cfg := *d.ContainerConfig
-	cfg.Hostname = d.ContainerName
-	fullName := d.NetName + "." + d.ContainerName
-	consulContainer, err := d.DockerAPI.ContainerCreate(ctx, &cfg, hostConfig, networkingConfig, fullName)
+	cfg := *opts.ContainerConfig
+	cfg.Hostname = opts.ContainerName
+	fullName := opts.NetName + "." + opts.ContainerName
+	consulContainer, err := client.ContainerCreate(ctx, &cfg, hostConfig, networkingConfig, fullName)
 	if err != nil {
 		return nil, fmt.Errorf("container create failed: %v", err)
 	}
 
-	err = d.DockerAPI.ContainerStart(ctx, consulContainer.ID, types.ContainerStartOptions{})
+	err = client.ContainerStart(ctx, consulContainer.ID, types.ContainerStartOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("container start failed: %v", err)
 	}
 
-	inspect, err := d.DockerAPI.ContainerInspect(ctx, consulContainer.ID)
+	inspect, err := client.ContainerInspect(ctx, consulContainer.ID)
 	if err != nil {
 		return nil, err
 	}
 	var buf = &bytes.Buffer{}
 	go func() {
-		_ = ContainerLogs(ctx, d.DockerAPI, inspect.ID, buf)
+		_ = ContainerLogs(ctx, client, inspect.ID, buf)
 	}()
-	go func() {
+	go func(ctx context.Context) {
 		//log.Printf("waiting for context on %s", fullName)
 		<-ctx.Done()
 		if ctx.Err() == context.DeadlineExceeded {
 			log.Print(buf.String())
 		}
 		//log.Printf("killing %s", fullName)
-		_ = CleanupContainer(context.Background(), d.DockerAPI, inspect.ID)
-	}()
+		_ = CleanupContainer(context.Background(), client, inspect.ID)
+	}(ctx)
 	return &inspect, nil
 }
 
-func ContainerLogs(ctx context.Context, cli *client.Client, id string, writer io.Writer) error {
+func ContainerLogs(ctx context.Context, cli *dockerapi.Client, id string, writer io.Writer) error {
 	resp, err := cli.ContainerLogs(ctx, id, types.ContainerLogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,

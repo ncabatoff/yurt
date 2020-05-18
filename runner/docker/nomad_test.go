@@ -7,7 +7,6 @@ import (
 	"github.com/ncabatoff/yurt/testutil"
 	"github.com/ncabatoff/yurt/util"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
@@ -21,12 +20,12 @@ func TestNomadDocker(t *testing.T) {
 
 	ip := te.NextIP()
 	consulRunner := testConsulDocker(t, te, ip, SingleConsulServerConfig(te.NetConf))
-	addr, err := consulRunner.AgentAddress()
+	addr, err := consulRunner.APIConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	testNomadDocker(t, te, "", SingleNomadServerConfig(te.NetConf, strings.TrimPrefix(addr, "http://")))
+	testNomadDocker(t, te, "", SingleNomadServerConfig(te.NetConf, addr.Address.Host))
 }
 
 func TestNomadDockerTLS(t *testing.T) {
@@ -40,11 +39,11 @@ func TestNomadDockerTLS(t *testing.T) {
 	}
 
 	consulRunner := testConsulDockerTLS(t, te, SingleConsulServerConfig(te.NetConf), ca)
-	addr, err := consulRunner.AgentAddress()
+	addr, err := consulRunner.APIConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := SingleNomadServerConfig(te.NetConf, strings.TrimPrefix(addr, "http://"))
+	cfg := SingleNomadServerConfig(te.NetConf, addr.Address.Host)
 
 	ip := te.NextIP()
 	cert, err := ca.NomadServerTLS(te.Ctx, ip, "10m")
@@ -72,7 +71,7 @@ func testNomadDocker(t *testing.T, te testutil.DockerTestEnv, ip string, cfg run
 	cfg.DataDir = filepath.Join(te.TmpDir, "nomad/data")
 	cfg.LogConfig.LogDir = filepath.Join(te.TmpDir, "nomad/log")
 
-	r, err := NewNomadDockerRunner(te.Docker, imageNomad, ip, cfg)
+	r, err := NewDockerRunner(te.Docker, imageNomad, ip, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,6 +84,9 @@ func testNomadDocker(t *testing.T, te testutil.DockerTestEnv, ip string, cfg run
 
 	expectedPeers := []string{fmt.Sprintf("%s:%d", ip, cfg.Ports.RPC)}
 	if err := runner.NomadRunnersHealthy(te.Ctx, []runner.NomadRunner{r}, expectedPeers); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Stop(); err != nil {
 		t.Fatal(err)
 	}
 }

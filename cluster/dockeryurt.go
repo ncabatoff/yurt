@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/ncabatoff/yurt/util"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -79,16 +80,26 @@ func (y *YurtRunCluster) Stop(ctx context.Context) error {
 }
 
 func (y *YurtRunCluster) installBinDir() error {
-	cmd := exec.Command("/Users/ncc/go/go1.13.7/bin/go", "build", "-o", "binaries/yurt-run", "../cmd/yurt-run")
+	fqfn, err := exec.LookPath("go")
+	if err != nil {
+		return fmt.Errorf("can't find 'go' in path: %v", err)
+	}
+	cmd := exec.Command(fqfn, "build", "-o", "../../runner/binaries/yurt-run")
 	for _, e := range os.Environ() {
 		if !strings.HasPrefix(e, "GOOS=") && !strings.HasPrefix(e, "CGO_ENABLED=") {
 			cmd.Env = append(cmd.Env, e)
 		}
 	}
-	cmd.Env = append(cmd.Env, "GOOS=linux")
+	cmd.Env = append(cmd.Env, "GOOS=linux", "GO111MODULE=on", "GOFLAGS=-mod=")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	err := cmd.Run()
+	cmd.Dir, err = filepath.Abs("../cmd/yurt-run")
+	if err != nil {
+		return err
+	}
+	log.Print("running command:", cmd)
+
+	err = cmd.Run()
 	if err != nil {
 		return err
 	}
@@ -132,9 +143,9 @@ func (y *YurtRunCluster) startNode(ctx context.Context, node int, ip string) err
 		"8600/tcp": {},
 		"8600/udp": {},
 	}
-	dr := &docker.Runner{
-		DockerAPI: y.docker,
-		NetName:   y.Network.DockerNetName,
+
+	cont, err := docker.Start(ctx, y.docker, docker.RunOptions{
+		NetName: y.Network.DockerNetName,
 		ContainerConfig: &container.Config{
 			Image:      y.BaseImage,
 			Entrypoint: []string{"/opt/yurt/bin/yurt-run"},
@@ -164,9 +175,7 @@ func (y *YurtRunCluster) startNode(ctx context.Context, node int, ip string) err
 		},
 		ContainerName: nodeName,
 		IP:            ip,
-	}
-
-	cont, err := dr.Start(ctx)
+	})
 	if err != nil {
 		return err
 	}

@@ -57,7 +57,7 @@ func NewTestEnv(t *testing.T, timeout time.Duration) TestEnv {
 		Cleanup: func() {
 			cancel()
 			if err := g.Wait(); err != nil {
-				t.Logf("exit with error: %v", err)
+				t.Logf("exit with error (this may be normal): %v", err)
 			}
 			_ = os.RemoveAll(tmpDir)
 			//t.Logf("cleanup %s: %v", tmpDir, err)
