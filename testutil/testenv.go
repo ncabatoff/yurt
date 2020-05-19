@@ -8,14 +8,13 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 
 	dockerapi "github.com/docker/docker/client"
 	"github.com/hashicorp/go-sockaddr"
+	"github.com/ncabatoff/yurt/binaries"
 	"github.com/ncabatoff/yurt/docker"
-	"github.com/ncabatoff/yurt/packages"
 	"github.com/ncabatoff/yurt/util"
 	"golang.org/x/sync/errgroup"
 )
@@ -74,8 +73,7 @@ type ExecTestEnv struct {
 
 func NewExecTestEnv(t *testing.T, timeout time.Duration) ExecTestEnv {
 	te := NewTestEnv(t, timeout)
-	dldirBase := filepath.Join(os.TempDir(), "yurt-test-downloads")
-	consulPath, err := packages.GetBinary("consul", runtime.GOOS, runtime.GOARCH, dldirBase)
+	consulPath, err := binaries.Default.Get("consul")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +82,7 @@ func NewExecTestEnv(t *testing.T, timeout time.Duration) ExecTestEnv {
 		t.Fatal(err)
 	}
 
-	nomadPath, err := packages.GetBinary("nomad", runtime.GOOS, runtime.GOARCH, dldirBase)
+	nomadPath, err := binaries.Default.Get("nomad")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +91,7 @@ func NewExecTestEnv(t *testing.T, timeout time.Duration) ExecTestEnv {
 		t.Fatal(err)
 	}
 
-	promPath, err := packages.GetBinary("prometheus", runtime.GOOS, runtime.GOARCH, dldirBase)
+	promPath, err := binaries.Default.Get("prometheus")
 	if err != nil {
 		t.Fatal(err)
 	}

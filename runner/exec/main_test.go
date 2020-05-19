@@ -21,5 +21,7 @@ func TestMain(m *testing.M) {
 		log.Fatal(err)
 	}
 	Vault = v
-	os.Exit(m.Run())
+	ret := m.Run()
+	v.Stop()
+	os.Exit(ret)
 }

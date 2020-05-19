@@ -1,16 +1,13 @@
-package packages
+package binaries
 
 import (
 	"os"
-	"path/filepath"
-	"runtime"
 	"testing"
 )
 
 func TestBinaries(t *testing.T) {
-	dldirBase := filepath.Join(os.TempDir(), "yurt-test-downloads")
-	for name := range registry {
-		path, err := GetBinary(name, runtime.GOOS, runtime.GOARCH, dldirBase)
+	for name := range registry() {
+		path, err := Default.Get(name)
 		if err != nil {
 			t.Fatal(err)
 		}

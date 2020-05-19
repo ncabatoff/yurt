@@ -4,16 +4,13 @@ import (
 	"context"
 	"fmt"
 	"github.com/ncabatoff/yurt/util"
-	"os"
 	"os/exec"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
 	"github.com/hashicorp/go-uuid"
 	vaultapi "github.com/hashicorp/vault/api"
-	"github.com/ncabatoff/yurt/packages"
+	"github.com/ncabatoff/yurt/binaries"
 )
 
 type CertificateAuthority struct {
@@ -69,8 +66,7 @@ func (v *VaultRunner) Start(ctx context.Context) (err error) {
 		return fmt.Errorf("already running")
 	}
 
-	dldirBase := filepath.Join(os.TempDir(), "yurt-test-downloads")
-	binPath, err := packages.GetBinary("vault", runtime.GOOS, runtime.GOARCH, dldirBase)
+	binPath, err := binaries.Default.Get("vault")
 	if err != nil {
 		return err
 	}
@@ -103,6 +99,10 @@ func (v *VaultRunner) Start(ctx context.Context) (err error) {
 	}
 
 	return nil
+}
+
+func (v *VaultRunner) Stop() {
+	v.cancel()
 }
 
 func waitVaultUnsealed(ctx context.Context, cli *vaultapi.Client) (err error) {

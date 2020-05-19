@@ -45,10 +45,13 @@ func testca(t *testing.T, timeout time.Duration) *testenv {
 		t.Fatal(err)
 	}
 	return &testenv{
-		tmpdir:  tmpdir,
-		cleanup: cleanup,
-		ctx:     ctx,
-		ca:      ca,
+		tmpdir: tmpdir,
+		cleanup: func() {
+			v.Stop()
+			cleanup()
+		},
+		ctx: ctx,
+		ca:  ca,
 	}
 }
 

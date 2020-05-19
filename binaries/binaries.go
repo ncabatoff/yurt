@@ -1,0 +1,254 @@
+package binaries
+
+import (
+	"bytes"
+	"fmt"
+	"github.com/hashicorp/go-getter"
+	"io/ioutil"
+	"net/url"
+	"os"
+	"path/filepath"
+	"runtime"
+	"sync"
+	"text/template"
+)
+
+type URLHelper struct {
+	urlTemplate    *template.Template
+	urlSumTemplate *template.Template
+}
+
+func NewURLHelper(mainURL, sumURL string) (*URLHelper, error) {
+	var err error
+	u := &URLHelper{
+		urlTemplate:    template.New("url"),
+		urlSumTemplate: template.New("sumurl"),
+	}
+
+	u.urlTemplate, err = u.urlTemplate.Parse(mainURL)
+	if err != nil {
+		return nil, fmt.Errorf("bad mainURL template: %v", err)
+	}
+
+	u.urlSumTemplate, err = u.urlSumTemplate.Parse(sumURL)
+	if err != nil {
+		return nil, fmt.Errorf("bad sumURL template: %v", err)
+	}
+
+	return u, nil
+}
+
+const hashicorpURLTemplateBase = "https://releases.hashicorp.com/{{ .Package }}/{{ .Version }}/"
+const hashicorpURLTemplate = hashicorpURLTemplateBase + "{{ .Package }}_{{ .Version }}_{{ .OS }}_{{ .Arch }}.zip"
+const hashicorpURLSumTemplate = hashicorpURLTemplateBase + "{{ .Package }}_{{ .Version }}_SHA256SUMS"
+const prometheusURLTemplateBase = "https://github.com/prometheus/{{ .Package }}/releases/download/v{{ .Version }}/"
+const prometheusURLTemplate = prometheusURLTemplateBase + "{{ .Package }}-{{ .Version }}.{{ .OS }}-{{ .Arch }}.tar.gz"
+const prometheusURLSumTemplate = prometheusURLTemplateBase + "sha256sums.txt"
+
+var hashicorpURLHelper, prometheusURLHelper *URLHelper
+
+func init() {
+	u, err := NewURLHelper(hashicorpURLTemplate, hashicorpURLSumTemplate)
+	if err != nil {
+		panic(err.Error())
+	}
+	hashicorpURLHelper = u
+
+	u, err = NewURLHelper(prometheusURLTemplate, prometheusURLSumTemplate)
+	if err != nil {
+		panic(err.Error())
+	}
+	prometheusURLHelper = u
+}
+
+type registryEntry struct {
+	name    string
+	version string
+	from    *URLHelper
+}
+
+func registry() map[string]registryEntry {
+	return map[string]registryEntry{
+		"nomad": {
+			name:    "nomad",
+			version: "0.11.2",
+			from:    hashicorpURLHelper,
+		},
+		"consul": {
+			name:    "consul",
+			version: "1.7.3",
+			from:    hashicorpURLHelper,
+		},
+		"vault": {
+			name:    "vault",
+			version: "1.4.1",
+			from:    hashicorpURLHelper,
+		},
+		"prometheus": {
+			name:    "prometheus",
+			version: "2.18.1",
+			from:    prometheusURLHelper,
+		},
+	}
+}
+
+type Manager struct {
+	l       sync.Mutex
+	cache   map[string]string
+	workDir string
+}
+
+func NewManager(workDir string) (*Manager, error) {
+	m := &Manager{workDir: workDir}
+	if err := os.MkdirAll(m.workDir, 0755); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+var Default = Manager{cache: make(map[string]string)}
+
+// dldirToBinary takes as input dldir, a directory that go-getter wrote to,
+// and the name of an upstream package defined in the registry package variable
+// (e.g. "consul").
+// Returns the path to an executable file that matches packageName
+// found somewhere under dldir.
+func dldirToBinary(dldir, packageName string) (string, error) {
+	fis, err := ioutil.ReadDir(dldir)
+	if err != nil {
+		return "", err
+	}
+
+	// There can be as many leading nested directories as you like.
+	if len(fis) == 1 && fis[0].IsDir() {
+		return dldirToBinary(filepath.Join(dldir, fis[0].Name()), packageName)
+	}
+
+	// As soon as we find a non-directory or multiple files in a directory,
+	// we better find an executable file matching packageName in this directory
+	// or there's going to be an error.
+	for _, fi := range fis {
+		if fi.Name() == packageName && fi.Mode().IsRegular() && (fi.Mode()&0111) == 0111 {
+			return filepath.Join(dldir, packageName), nil
+		}
+	}
+
+	return "", fmt.Errorf("didn't find %s under %s", packageName, dldir)
+}
+
+func (m *Manager) Get(packageName string) (string, error) {
+	m.l.Lock()
+	defer m.l.Unlock()
+
+	if p, ok := m.cache[packageName]; ok {
+		return p, nil
+	}
+
+	return m.Fetch(packageName, runtime.GOOS, runtime.GOARCH)
+}
+
+// Fetch fetches the packageName based on its registry entry,
+// if it's not already present on disk with the correct checksum.
+// Then it extracts the archive and finds the binary with the same name as packageName.
+// Returns the absolute path (located under m.workDir) where the binary was found.
+func (m *Manager) Fetch(packageName, osName, arch string) (string, error) {
+	workdir := m.workDir
+	if workdir == "" {
+		workdir = filepath.Join(os.TempDir(), "yurt/binaries")
+	}
+	o, ok := registry()[packageName]
+	if !ok {
+		return "", fmt.Errorf("unknown package name %q", packageName)
+	}
+
+	var sumURL bytes.Buffer
+	err := o.from.urlSumTemplate.Execute(&sumURL, struct {
+		Package string
+		Version string
+	}{
+		Package: packageName,
+		Version: o.version,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	var sourceURL bytes.Buffer
+	err = o.from.urlTemplate.Execute(&sourceURL, struct {
+		Package string
+		Version string
+		OS      string
+		Arch    string
+	}{
+		Package: packageName,
+		Version: o.version,
+		OS:      osName,
+		Arch:    arch,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	sourceURLParsed, err := url.Parse(sourceURL.String())
+	if err != nil {
+		return "", err
+	}
+
+	localPackage := filepath.Join(workdir, packageName, filepath.Base(sourceURLParsed.Path))
+	beforeStat, err := os.Stat(localPackage)
+	if err != nil && !os.IsNotExist(err) {
+		return "", err
+	}
+
+	// First download the package archive file, using a checksum URL to validate
+	// its contents.  This also allows us to skip the download if the file
+	// already exists with the valid checksum.
+	client := &getter.Client{
+		Src:           sourceURL.String() + "?checksum=file:" + sumURL.String(),
+		Dst:           localPackage,
+		Mode:          getter.ClientModeFile,
+		Decompressors: map[string]getter.Decompressor{},
+	}
+	if err := client.Get(); err != nil {
+		return "", fmt.Errorf("go-getter error: %w", err)
+	}
+	afterStat, err := os.Stat(localPackage)
+	if err != nil {
+		return "", err
+	}
+
+	// Now that we know the correct file exists on disk, we could just extract it.
+	// But we could also allow go-getter to do the work of figuring out how.
+	// Unless of course the archive file is unchanged and we see an existing
+	// extract dir, in which case we do nothing.
+	packageExtract := filepath.Join(workdir, packageName, o.version)
+	_, err = os.Stat(localPackage)
+	_, err2 := os.Stat(packageExtract)
+	if err == nil && err2 == nil && beforeStat.ModTime().Equal(afterStat.ModTime()) {
+		return dldirToBinary(packageExtract, packageName)
+	}
+
+	// If we reached this point we might have re-downloaded something due to a
+	// checksum issue, so don't use any files that might have come from prev ver.
+	if err = os.RemoveAll(packageExtract); err != nil {
+		return "", err
+	}
+
+	// Extract to a temp folder so that we can detect previous errors, i.e. partial extracts
+	packageExtractTmp := packageExtract + ".tmp"
+	if err = os.RemoveAll(packageExtractTmp); err != nil {
+		return "", err
+	}
+
+	client = &getter.Client{
+		Src:  localPackage,
+		Dst:  packageExtractTmp,
+		Mode: getter.ClientModeDir,
+	}
+	if err := client.Get(); err != nil {
+		return "", fmt.Errorf("go-getter error: %w", err)
+	}
+	err = os.Rename(packageExtractTmp, packageExtract)
+
+	return dldirToBinary(packageExtract, packageName)
+}

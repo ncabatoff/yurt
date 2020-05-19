@@ -19,8 +19,8 @@ import (
 	consulapi "github.com/hashicorp/consul/api"
 	"github.com/hashicorp/go-multierror"
 	nomadapi "github.com/hashicorp/nomad/api"
+	"github.com/ncabatoff/yurt/binaries"
 	"github.com/ncabatoff/yurt/docker"
-	"github.com/ncabatoff/yurt/packages"
 	"github.com/ncabatoff/yurt/runner"
 )
 
@@ -105,7 +105,7 @@ func (y *YurtRunCluster) installBinDir() error {
 	}
 
 	for _, p := range []string{"consul", "nomad"} {
-		bin, err := packages.GetBinary(p, "linux", "amd64", "binaries")
+		bin, err := binaries.Default.Fetch(p, "linux", "amd64")
 		if err != nil {
 			return err
 		}

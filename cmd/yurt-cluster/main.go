@@ -18,7 +18,7 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"github.com/ncabatoff/yurt/packages"
+	"github.com/ncabatoff/yurt/binaries"
 	"github.com/ncabatoff/yurt/pki"
 	"github.com/ncabatoff/yurt/runner"
 	"github.com/skratchdot/open-golang/open"
@@ -57,10 +57,13 @@ func main() {
 		log.Fatal(err)
 	}
 
-	bindir := filepath.Join(*flagWorkDir, "downloads")
+	binmgr, err := binaries.NewManager(*flagWorkDir)
+	if err != nil {
+		log.Fatal(err)
+	}
 	consulBin := *flagConsulBin
 	if consulBin == "" {
-		consulBin, err = packages.GetBinary("consul", runtime.GOOS, runtime.GOARCH, bindir)
+		consulBin, err = binmgr.Fetch("consul", runtime.GOOS, runtime.GOARCH)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -72,7 +75,7 @@ func main() {
 
 	nomadBin := *flagNomadBin
 	if nomadBin == "" {
-		nomadBin, err = packages.GetBinary("nomad", runtime.GOOS, runtime.GOARCH, bindir)
+		nomadBin, err = binmgr.Fetch("nomad", runtime.GOOS, runtime.GOARCH)
 		if err != nil {
 			log.Fatal(err)
 		}
