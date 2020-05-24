@@ -5,18 +5,13 @@ import (
 	"log"
 
 	"github.com/hashicorp/vault/sdk/helper/jsonutil"
+	"github.com/ncabatoff/yurt"
 	"github.com/ncabatoff/yurt/pki"
-	"github.com/ncabatoff/yurt/util"
 )
 
 // ConsulRunner is used to create a Consul node and talk to it.
 type ConsulRunner interface {
 	APIRunner
-}
-
-// ConsulRunnerBuilder is a factory used by clusters to create nodes.
-type ConsulRunnerBuilder interface {
-	MakeConsulRunner(ConsulCommand) (ConsulRunner, error)
 }
 
 // ConsulCommand defines how to create a Consul node
@@ -67,11 +62,24 @@ func (c ConsulPorts) Add(inc int) ConsulPorts {
 	return c
 }
 
+func (c ConsulPorts) ToList() []string {
+	return []string{
+		fmt.Sprintf("%d/tcp", c.HTTP),
+		fmt.Sprintf("%d/tcp", c.DNS),
+		fmt.Sprintf("%d/udp", c.DNS),
+		fmt.Sprintf("%d/tcp", c.SerfLAN),
+		fmt.Sprintf("%d/udp", c.SerfLAN),
+		fmt.Sprintf("%d/tcp", c.SerfWAN),
+		fmt.Sprintf("%d/udp", c.SerfWAN),
+		fmt.Sprintf("%d/tcp", c.Server),
+	}
+}
+
 // ConsulConfig describes how to run a single Consul agent.
 type ConsulConfig struct {
 	// NodeName names the consul node; not required if using a non-localhost network.
 	NodeName      string
-	NetworkConfig util.NetworkConfig
+	NetworkConfig yurt.NetworkConfig
 
 	// Non-default port listener settings can be provided, and must be if
 	// there's no networking config (meaning everyone listens on localhost.)
@@ -145,6 +153,7 @@ func (cc ConsulConfig) Args() []string {
 
 func (cc ConsulConfig) Config() Config {
 	return Config{
+		Name:          "consul",
 		LogDir:        cc.LogConfig.LogDir,
 		DataDir:       cc.DataDir,
 		ConfigDir:     cc.ConfigDir,
@@ -152,6 +161,7 @@ func (cc ConsulConfig) Config() Config {
 		NodeName:      cc.NodeName,
 		APIPort:       cc.Ports.HTTP,
 		TLS:           cc.TLS,
+		Ports:         cc.Ports.ToList(),
 	}
 }
 
@@ -205,6 +215,21 @@ func (cc ConsulConfig) WithDirs(config, data, log string) Command {
 	return cc
 }
 
+func (cc ConsulConfig) WithName(name string) Command {
+	cc.NodeName = name
+	return cc
+}
+
+func (cc ConsulConfig) WithNetwork(config yurt.NetworkConfig) Command {
+	cc.NetworkConfig = config
+	return cc
+}
+
+func (cc ConsulConfig) WithPorts(firstPort int) Command {
+	cc.Ports = SeqConsulPorts(firstPort)
+	return cc
+}
+
 // ConsulServerConfig is a superset of ConsulConfig, containing configuration only
 // needed by servers.
 type ConsulServerConfig struct {
@@ -222,5 +247,20 @@ func (cc ConsulServerConfig) Files() map[string]string {
 
 func (cc ConsulServerConfig) WithDirs(config, data, log string) Command {
 	cc.ConfigDir, cc.DataDir, cc.LogConfig.LogDir = config, data, log
+	return cc
+}
+
+func (cc ConsulServerConfig) WithName(name string) Command {
+	cc.NodeName = name
+	return cc
+}
+
+func (cc ConsulServerConfig) WithNetwork(config yurt.NetworkConfig) Command {
+	cc.NetworkConfig = config
+	return cc
+}
+
+func (cc ConsulServerConfig) WithPorts(firstPort int) Command {
+	cc.Ports = SeqConsulPorts(firstPort)
 	return cc
 }

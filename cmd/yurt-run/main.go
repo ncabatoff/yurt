@@ -5,8 +5,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/ncabatoff/yurt/runner/exec"
-	"github.com/ncabatoff/yurt/util"
 	"io/ioutil"
 	"log"
 	"os"
@@ -16,9 +14,10 @@ import (
 
 	"github.com/hashicorp/go-sockaddr"
 	"github.com/hashicorp/vault/sdk/helper/certutil"
+	"github.com/ncabatoff/yurt"
 	"github.com/ncabatoff/yurt/pki"
+	"github.com/ncabatoff/yurt/runenv"
 	"github.com/ncabatoff/yurt/runner"
-	"golang.org/x/sync/errgroup"
 	"gopkg.in/yaml.v2"
 )
 
@@ -127,14 +126,15 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	g, ctx := errgroup.WithContext(ctx)
+	e, err := runenv.NewExecEnv(ctx, "yurt", *flagData, 16000)
 	if err != nil {
-		log.Fatalf("error creating errgroup: %v", err)
+		log.Fatalf("error creating env: %v", err)
 	}
-	g.Go(runConsul(ctx, yc).Wait)
-	g.Go(runNomad(ctx, yc).Wait)
 
-	if err := g.Wait(); err != nil {
+	runConsul(ctx, e, yc)
+	runNomad(ctx, e, yc)
+
+	if err := e.Wait(); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -201,7 +201,7 @@ func (c *yurtConfig) setupTLS(vaultAddr, myIP string) error {
 	return nil
 }
 
-func runConsul(ctx context.Context, yc *yurtConfig) runner.ConsulRunner {
+func runConsul(ctx context.Context, e runenv.Env, yc *yurtConfig) runner.ConsulRunner {
 	myName, err := os.Hostname()
 	if err != nil {
 		log.Fatalf("error getting hostname: %v", err)
@@ -210,15 +210,9 @@ func runConsul(ctx context.Context, yc *yurtConfig) runner.ConsulRunner {
 	var consulCommand runner.ConsulCommand
 	{
 		baseConfig := runner.ConsulConfig{
-			NetworkConfig: util.NetworkConfig{Network: yc.network},
+			NetworkConfig: yurt.NetworkConfig{Network: yc.network},
 			JoinAddrs:     yc.ConsulServerIPs,
-			NodeName:      myName,
-			DataDir:       filepath.Join(yc.DataDir, "consul", "data"),
-			ConfigDir:     filepath.Join(yc.DataDir, "consul", "config"),
-			LogConfig: runner.LogConfig{
-				LogDir: filepath.Join(yc.DataDir, "consul", "log"),
-			},
-			Ports: runner.DefConsulPorts(),
+			Ports:         runner.DefConsulPorts(),
 			//TLS:           pki.TLSConfigPEM{},
 		}
 
@@ -228,21 +222,17 @@ func runConsul(ctx context.Context, yc *yurtConfig) runner.ConsulRunner {
 			consulCommand = baseConfig
 		}
 	}
-
-	builder := exec.ConsulExecBuilder{BinPath: yc.ConsulBin}
-	consulRunner, err := builder.MakeConsulRunner(consulCommand)
+	r, _, err := e.Run(ctx, consulCommand, yurt.Node{
+		Name: myName,
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	_, err = consulRunner.Start(ctx)
-	if err != nil {
-		log.Fatal(err)
-	}
-	return consulRunner
+	return r
 }
 
-func runNomad(ctx context.Context, yc *yurtConfig) runner.NomadRunner {
+func runNomad(ctx context.Context, e runenv.Env, yc *yurtConfig) runner.NomadRunner {
 	myName, err := os.Hostname()
 	if err != nil {
 		log.Fatalf("error getting hostname: %v", err)
@@ -251,14 +241,8 @@ func runNomad(ctx context.Context, yc *yurtConfig) runner.NomadRunner {
 	var nomadCommand runner.NomadCommand
 	{
 		baseConfig := runner.NomadConfig{
-			NetworkConfig: util.NetworkConfig{Network: yc.network},
-			NodeName:      myName,
-			DataDir:       filepath.Join(yc.DataDir, "nomad", "data"),
-			ConfigDir:     filepath.Join(yc.DataDir, "nomad", "config"),
-			LogConfig: runner.LogConfig{
-				LogDir: filepath.Join(yc.DataDir, "nomad", "log"),
-			},
-			Ports: runner.DefNomadPorts(),
+			NetworkConfig: yurt.NetworkConfig{Network: yc.network},
+			Ports:         runner.DefNomadPorts(),
 			//TLS:           pki.TLSConfigPEM{},
 		}
 
@@ -272,15 +256,12 @@ func runNomad(ctx context.Context, yc *yurtConfig) runner.NomadRunner {
 		}
 	}
 
-	builder := exec.NomadExecBuilder{BinPath: yc.NomadBin}
-	nomadRunner, err := builder.MakeNomadRunner(nomadCommand)
+	r, _, err := e.Run(ctx, nomadCommand, yurt.Node{
+		Name: myName,
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	_, err = nomadRunner.Start(ctx)
-	if err != nil {
-		log.Fatal(err)
-	}
-	return nomadRunner
+	return r
 }

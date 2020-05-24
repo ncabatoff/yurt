@@ -13,7 +13,7 @@ import (
 )
 
 type ExecRunner struct {
-	runner.Command
+	command runner.Command
 	BinPath string
 	cmd     *exec.Cmd
 	cancel  func()
@@ -23,9 +23,13 @@ var _ runner.Runner = (*ExecRunner)(nil)
 
 func NewExecRunner(binPath string, command runner.Command) (*ExecRunner, error) {
 	return &ExecRunner{
-		Command: command,
+		command: command,
 		BinPath: binPath,
 	}, nil
+}
+
+func (e *ExecRunner) Command() runner.Command {
+	return e.command
 }
 
 // Start launches the process
@@ -34,25 +38,27 @@ func (e *ExecRunner) Start(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("already running")
 	}
 
-	for _, dir := range []string{e.Config().DataDir, e.Config().LogDir} {
+	cfg := e.command.Config()
+	for _, dir := range []string{cfg.DataDir, cfg.LogDir} {
 		if dir != "" {
 			if err := os.MkdirAll(dir, 0755); err != nil {
 				return "", err
 			}
 		}
 	}
-	for name, contents := range e.Files() {
-		if err := util.WriteConfig(e.Config().ConfigDir, name, contents); err != nil {
+	for name, contents := range e.command.Files() {
+		if err := util.WriteConfig(cfg.ConfigDir, name, contents); err != nil {
 			return "", err
 		}
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
-	cmd := exec.CommandContext(ctx, e.BinPath, e.Args()...)
-	cmd.Env = e.Env()
-	cmd.Dir = e.Config().ConfigDir
-	cmd.Stdout = util.NewOutputWriter(e.Config().NodeName, os.Stdout)
-	cmd.Stderr = util.NewOutputWriter(e.Config().NodeName, os.Stderr)
+	cmd := exec.CommandContext(ctx, e.BinPath, e.command.Args()...)
+	cmd.Env = e.command.Env()
+	cmd.Dir = cfg.ConfigDir
+	//fmt.Fprintln(os.Stderr, cmd)
+	cmd.Stdout = util.NewOutputWriter(cfg.NodeName, os.Stdout)
+	cmd.Stderr = util.NewOutputWriter(cfg.NodeName, os.Stderr)
 
 	if err := cmd.Start(); err != nil {
 		return "", err
@@ -66,7 +72,7 @@ func (e *ExecRunner) Start(ctx context.Context) (string, error) {
 func (e *ExecRunner) APIConfig() (*runner.APIConfig, error) {
 	apiConfig := runner.APIConfig{Address: url.URL{Scheme: "http"}}
 
-	cfg := e.Config()
+	cfg := e.command.Config()
 	if cfg.APIPort == 0 {
 		return nil, fmt.Errorf("no API port defined in config")
 	}
@@ -76,8 +82,6 @@ func (e *ExecRunner) APIConfig() (*runner.APIConfig, error) {
 		apiConfig.CAFile = filepath.Join(cfg.ConfigDir, "ca.pem")
 	}
 
-	// TODO there's no reason we have to limit exec runners to using localhost.
-	// Use network instead.  Or better still the command/config.
 	apiConfig.Address.Host = fmt.Sprintf("%s:%d", "127.0.0.1", cfg.APIPort)
 
 	return &apiConfig, nil

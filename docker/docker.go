@@ -1,42 +1,49 @@
 package docker
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 	dockerapi "github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/archive"
 	"github.com/docker/docker/pkg/stdcopy"
+	"github.com/ncabatoff/yurt/util"
 	"io"
 	"io/ioutil"
 	"log"
+	"os"
 )
 
-func SetupNetwork(ctx context.Context, cli *dockerapi.Client, netName, cidr string) (string, error) {
+// Create a docker private network or if one already exists with the name netName,
+// use that one.
+func SetupNetwork(ctx context.Context, cli *dockerapi.Client, netName, cidr string) (*types.NetworkResource, error) {
 	netResources, err := cli.NetworkList(ctx, types.NetworkListOptions{})
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	for _, netRes := range netResources {
 		if netRes.Name == netName {
-			if len(netRes.IPAM.Config) > 0 && netRes.IPAM.Config[0].Subnet == cidr {
-				return netRes.ID, nil
+			if len(netRes.IPAM.Config) > 0 {
+				return &netRes, nil
 			}
 			err = cli.NetworkRemove(ctx, netRes.ID)
 			if err != nil {
-				return "", err
+				return nil, err
 			}
 		}
 	}
 
 	id, err := createNetwork(ctx, cli, netName, cidr)
 	if err != nil {
-		return "", fmt.Errorf("couldn't create network %s on %s: %w", netName, cidr, err)
+		return nil, fmt.Errorf("couldn't create network %s on %s: %w", netName, cidr, err)
 	}
-	return id, nil
+	netRes, err := cli.NetworkInspect(ctx, id, types.NetworkInspectOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return &netRes, nil
 }
 
 func createNetwork(ctx context.Context, cli *dockerapi.Client, netName, cidr string) (string, error) {
@@ -62,12 +69,15 @@ func createNetwork(ctx context.Context, cli *dockerapi.Client, netName, cidr str
 }
 
 func Wait(api *dockerapi.Client, containerID string) error {
+	//log.Println("waiting for container", containerID)
 	chanWaitOK, chanErr := api.ContainerWait(context.Background(),
 		containerID, container.WaitConditionNotRunning)
 	select {
 	case err := <-chanErr:
+		//log.Println("waiting for container error", containerID, err)
 		return err
 	case res := <-chanWaitOK:
+		//log.Println("waiting for container exit", containerID, res.StatusCode)
 		if res.StatusCode != 0 {
 			return fmt.Errorf("container exited with %d", res.StatusCode)
 		}
@@ -99,14 +109,14 @@ type RunOptions struct {
 	NetName         string
 	IP              string
 	Privileged      bool
-	Mounts          []mount.Mount
+	CopyFromTo      map[string]string
 }
 
 func Start(ctx context.Context, client *dockerapi.Client, opts RunOptions) (*types.ContainerJSON, error) {
 	hostConfig := &container.HostConfig{
 		PublishAllPorts: true,
-		Mounts:          opts.Mounts,
-		AutoRemove:      true,
+		AutoRemove:      false,
+		//Privileged: true,
 	}
 
 	networkingConfig := &network.NetworkingConfig{}
@@ -134,35 +144,69 @@ func Start(ctx context.Context, client *dockerapi.Client, opts RunOptions) (*typ
 
 	cfg := *opts.ContainerConfig
 	cfg.Hostname = opts.ContainerName
-	fullName := opts.NetName + "." + opts.ContainerName
-	consulContainer, err := client.ContainerCreate(ctx, &cfg, hostConfig, networkingConfig, fullName)
+	container, err := client.ContainerCreate(ctx, &cfg, hostConfig, networkingConfig, opts.ContainerName)
 	if err != nil {
 		return nil, fmt.Errorf("container create failed: %v", err)
 	}
 
-	err = client.ContainerStart(ctx, consulContainer.ID, types.ContainerStartOptions{})
+	for from, to := range opts.CopyFromTo {
+		if err := CopyToContainer(ctx, client, container.ID, from, to); err != nil {
+			_ = client.ContainerRemove(ctx, container.ID, types.ContainerRemoveOptions{})
+			return nil, err
+		}
+	}
+
+	err = client.ContainerStart(ctx, container.ID, types.ContainerStartOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("container start failed: %v", err)
 	}
 
-	inspect, err := client.ContainerInspect(ctx, consulContainer.ID)
+	inspect, err := client.ContainerInspect(ctx, container.ID)
 	if err != nil {
 		return nil, err
 	}
-	var buf = &bytes.Buffer{}
 	go func() {
-		_ = ContainerLogs(ctx, client, inspect.ID, buf)
+		err = ContainerLogs(ctx, client, inspect.ID, util.NewOutputWriter(opts.ContainerName, os.Stdout))
+		if err != nil {
+			log.Printf("error getting container logs for %s: %v", opts.ContainerName, err)
+		}
 	}()
 	go func(ctx context.Context) {
 		//log.Printf("waiting for context on %s", fullName)
 		<-ctx.Done()
-		if ctx.Err() == context.DeadlineExceeded {
-			log.Print(buf.String())
-		}
-		//log.Printf("killing %s", fullName)
-		_ = CleanupContainer(context.Background(), client, inspect.ID)
+		log.Printf("context done for container %s, err: %v", opts.ContainerName, ctx.Err())
+		//log.Printf("killing %s", opts.ContainerName)
+		//_ = CleanupContainer(context.Background(), client, inspect.ID)
+		client.ContainerStop(context.Background(), container.ID, nil)
 	}(ctx)
 	return &inspect, nil
+}
+
+func CopyToContainer(ctx context.Context, client *dockerapi.Client, containerID, from, to string) error {
+	srcInfo, err := archive.CopyInfoSourcePath(from, false)
+	if err != nil {
+		return fmt.Errorf("error copying from source %q: %v", from, err)
+	}
+
+	srcArchive, err := archive.TarResource(srcInfo)
+	if err != nil {
+		return fmt.Errorf("error creating tar from source %q: %v", from, err)
+	}
+	defer srcArchive.Close()
+
+	dstInfo := archive.CopyInfo{Path: to}
+
+	dstDir, content, err := archive.PrepareArchiveCopy(srcArchive, srcInfo, dstInfo)
+	if err != nil {
+		return fmt.Errorf("error preparing copy from %q -> %q: %v", from, to, err)
+	}
+	defer content.Close()
+	err = client.CopyToContainer(ctx, containerID, dstDir, content, types.CopyToContainerOptions{})
+	if err != nil {
+		return fmt.Errorf("error copying from %q -> %q: %v", from, to, err)
+	}
+
+	return nil
 }
 
 func ContainerLogs(ctx context.Context, cli *dockerapi.Client, id string, writer io.Writer) error {

@@ -3,7 +3,6 @@ package util
 import (
 	"bufio"
 	"fmt"
-	"github.com/hashicorp/go-sockaddr"
 	"github.com/hashicorp/vault/api"
 	"github.com/hashicorp/vault/sdk/helper/certutil"
 	"io"
@@ -59,11 +58,6 @@ func WriteConfig(dir, name, contents string) error {
 	return ioutil.WriteFile(path, []byte(contents), 0644)
 }
 
-type NetworkConfig struct {
-	Network       sockaddr.SockAddr
-	DockerNetName string
-}
-
 func MakeVaultClient(addr, token string) (*api.Client, error) {
 	vaultConfig := api.DefaultConfig()
 	vaultConfig.Address = addr
@@ -73,4 +67,23 @@ func MakeVaultClient(addr, token string) (*api.Client, error) {
 	}
 	cli.SetToken(token)
 	return cli, nil
+}
+
+func CopyFile(to, from string) error {
+	f, err := os.Open(from)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	t, err := os.Create(to)
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(t, f)
+	if err != nil {
+		t.Close()
+		return err
+	}
+	return t.Close()
 }

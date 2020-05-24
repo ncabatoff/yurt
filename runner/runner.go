@@ -5,8 +5,8 @@ import (
 	"fmt"
 	consulapi "github.com/hashicorp/consul/api"
 	nomadapi "github.com/hashicorp/nomad/api"
+	"github.com/ncabatoff/yurt"
 	"github.com/ncabatoff/yurt/pki"
-	"github.com/ncabatoff/yurt/util"
 	"net/url"
 	"reflect"
 	"sort"
@@ -25,7 +25,7 @@ type (
 		// log to disk.
 		LogDir string
 		// NetworkConfig specifies how network addresses get assigned
-		NetworkConfig util.NetworkConfig
+		NetworkConfig yurt.NetworkConfig
 		// NodeName is the name for this instance of the process.  This may or
 		// may not be an addressable name, depending on NetworkConfig.
 		NodeName string
@@ -33,7 +33,9 @@ type (
 		APIPort int
 		// TLS is used to configure TLS.  CA is required for any TLS connection,
 		// the other fields are only needed if client TLS is used.
-		TLS pki.TLSConfigPEM
+		TLS   pki.TLSConfigPEM
+		Name  string
+		Ports []string
 	}
 
 	// Command describes how to run and interact with a process that starts
@@ -51,11 +53,15 @@ type (
 		Files() map[string]string
 		// WithDirs returns a new Command with alternate config, data, and log dirs.
 		WithDirs(config, data, log string) Command
+		WithPorts(firstPort int) Command
+		WithNetwork(config yurt.NetworkConfig) Command
+		WithName(name string) Command
 	}
 
 	// Runner is the basic interface used for launching processes.
 	Runner interface {
 		// Start launches a process and returns the IP or hostname it runs on.
+		Command() Command
 		Start(ctx context.Context) (string, error)
 		Wait() error
 		Stop() error
@@ -201,14 +207,6 @@ func ConsulRunnersHealthy(ctx context.Context, runners []ConsulRunner, expectedP
 		return err
 	}
 	return LeaderAPIsHealthy(ctx, apis, expectedPeers)
-}
-
-func ConsulRunnersHealthyNow(runners []ConsulRunner, expectedPeers []string) error {
-	apis, err := ConsulLeaderAPIs(runners)
-	if err != nil {
-		return err
-	}
-	return LeaderAPIsHealthyNow(apis, expectedPeers)
 }
 
 func NomadRunnersHealthy(ctx context.Context, runners []NomadRunner, expectedPeers []string) error {

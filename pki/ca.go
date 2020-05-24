@@ -208,6 +208,12 @@ func createIntermediateCA(cli *vaultapi.Client, pfx string) error {
 }
 
 func (ca *CertificateAuthority) serverTLS(ctx context.Context, role, cn, ip, ttl string) (*TLSConfigPEM, error) {
+	switch ip {
+	case "":
+		ip = "127.0.0.1"
+	default:
+		ip += ",127.0.0.1"
+	}
 	secret, err := ca.cli.Logical().Write(ca.path+"-pki-int/issue/"+role, map[string]interface{}{
 		"common_name": cn,
 		"alt_names":   "localhost",
@@ -231,9 +237,9 @@ func (ca *CertificateAuthority) serverTLS(ctx context.Context, role, cn, ip, ttl
 }
 
 func (ca *CertificateAuthority) ConsulServerTLS(ctx context.Context, ip, ttl string) (*TLSConfigPEM, error) {
-	return ca.serverTLS(ctx, "consul-server", "server.dc1.consul", ip+",127.0.0.1", ttl)
+	return ca.serverTLS(ctx, "consul-server", "server.dc1.consul", ip, ttl)
 }
 
 func (ca *CertificateAuthority) NomadServerTLS(ctx context.Context, ip, ttl string) (*TLSConfigPEM, error) {
-	return ca.serverTLS(ctx, "nomad-server", "server.global.nomad", ip+",127.0.0.1", ttl)
+	return ca.serverTLS(ctx, "nomad-server", "server.global.nomad", ip, ttl)
 }

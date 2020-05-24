@@ -2,11 +2,11 @@ package runner
 
 import (
 	"fmt"
+	"github.com/ncabatoff/yurt"
 	"log"
 
 	"github.com/hashicorp/vault/sdk/helper/jsonutil"
 	"github.com/ncabatoff/yurt/pki"
-	"github.com/ncabatoff/yurt/util"
 )
 
 type NomadCommand interface {
@@ -15,11 +15,6 @@ type NomadCommand interface {
 
 type NomadRunner interface {
 	APIRunner
-}
-
-// NomadRunnerBuilder is a factory used by clusters to create nodes.
-type NomadRunnerBuilder interface {
-	MakeNomadRunner(NomadCommand) (NomadRunner, error)
 }
 
 type NomadPorts struct {
@@ -43,9 +38,17 @@ func (n NomadPorts) Add(inc int) NomadPorts {
 	return n
 }
 
+func (c NomadPorts) ToList() []string {
+	return []string{
+		fmt.Sprintf("%d/tcp", c.HTTP),
+		fmt.Sprintf("%d/tcp", c.Serf),
+		fmt.Sprintf("%d/tcp", c.RPC),
+	}
+}
+
 type NomadConfig struct {
 	NodeName      string
-	NetworkConfig util.NetworkConfig
+	NetworkConfig yurt.NetworkConfig
 	Ports         NomadPorts
 	LogConfig     LogConfig
 	DataDir       string
@@ -83,6 +86,7 @@ func (nc NomadConfig) Args() []string {
 
 func (nc NomadConfig) Config() Config {
 	return Config{
+		Name:          "nomad",
 		LogDir:        nc.LogConfig.LogDir,
 		DataDir:       nc.DataDir,
 		ConfigDir:     nc.ConfigDir,
@@ -90,6 +94,7 @@ func (nc NomadConfig) Config() Config {
 		NodeName:      nc.NodeName,
 		APIPort:       nc.Ports.HTTP,
 		TLS:           nc.TLS,
+		Ports:         nc.Ports.ToList(),
 	}
 }
 
@@ -194,6 +199,21 @@ func (nc NomadServerConfig) Args() []string {
 		fmt.Sprintf("-bootstrap-expect=%d", nc.BootstrapExpect))
 }
 
+func (nc NomadServerConfig) WithName(name string) Command {
+	nc.NodeName = name
+	return nc
+}
+
+func (nc NomadServerConfig) WithNetwork(config yurt.NetworkConfig) Command {
+	nc.NetworkConfig = config
+	return nc
+}
+
+func (nc NomadServerConfig) WithPorts(firstPort int) Command {
+	nc.Ports = SeqNomadPorts(firstPort)
+	return nc
+}
+
 func (nc NomadServerConfig) WithDirs(config, data, log string) Command {
 	nc.ConfigDir, nc.DataDir, nc.LogConfig.LogDir = config, data, log
 	return nc
@@ -201,6 +221,21 @@ func (nc NomadServerConfig) WithDirs(config, data, log string) Command {
 
 type NomadClientConfig struct {
 	NomadConfig
+}
+
+func (nc NomadClientConfig) WithName(name string) Command {
+	nc.NodeName = name
+	return nc
+}
+
+func (nc NomadClientConfig) WithNetwork(config yurt.NetworkConfig) Command {
+	nc.NetworkConfig = config
+	return nc
+}
+
+func (nc NomadClientConfig) WithPorts(firstPort int) Command {
+	nc.Ports = SeqNomadPorts(firstPort)
+	return nc
 }
 
 func (nc NomadClientConfig) Args() []string {

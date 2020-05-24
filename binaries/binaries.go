@@ -1,3 +1,8 @@
+// binaries fetches "binaries" from URLs, decompresses/extracts them if the
+// URL points to an archive like a zip, and provides a path to the binary
+// named after the package.
+// The binary should be either the last element of the URL path for non-archives,
+// or live somewhere within the archive.
 package binaries
 
 import (
@@ -5,10 +10,13 @@ import (
 	"fmt"
 	"github.com/hashicorp/go-getter"
 	"io/ioutil"
+	"log"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"text/template"
 )
@@ -68,6 +76,8 @@ type registryEntry struct {
 }
 
 func registry() map[string]registryEntry {
+	// yurt-run is "fetchable", but it will be built locally,
+	// so we don't have a registry entry for it
 	return map[string]registryEntry{
 		"nomad": {
 			name:    "nomad",
@@ -106,7 +116,10 @@ func NewManager(workDir string) (*Manager, error) {
 	return m, nil
 }
 
-var Default = Manager{cache: make(map[string]string)}
+var Default = Manager{
+	cache:   make(map[string]string),
+	workDir: filepath.Join(os.TempDir(), "yurt/binaries"),
+}
 
 // dldirToBinary takes as input dldir, a directory that go-getter wrote to,
 // and the name of an upstream package defined in the registry package variable
@@ -137,14 +150,31 @@ func dldirToBinary(dldir, packageName string) (string, error) {
 }
 
 func (m *Manager) Get(packageName string) (string, error) {
+	return m.GetOSArch(packageName, runtime.GOOS, runtime.GOARCH)
+}
+
+func (m *Manager) GetOSArch(packageName, os, arch string) (string, error) {
 	m.l.Lock()
 	defer m.l.Unlock()
 
-	if p, ok := m.cache[packageName]; ok {
-		return p, nil
+	if binPath, ok := m.cache[packageName]; ok {
+		return binPath, nil
 	}
 
-	return m.Fetch(packageName, runtime.GOOS, runtime.GOARCH)
+	var binPath string
+	var err error
+
+	if packageName == "yurt-run" {
+		binPath, err = m.buildLocalBin(packageName, os, arch)
+	} else {
+		binPath, err = m.Fetch(packageName, os, arch)
+	}
+
+	if err != nil {
+		return "", err
+	}
+	m.cache[packageName] = binPath
+	return binPath, nil
 }
 
 // Fetch fetches the packageName based on its registry entry,
@@ -153,9 +183,6 @@ func (m *Manager) Get(packageName string) (string, error) {
 // Returns the absolute path (located under m.workDir) where the binary was found.
 func (m *Manager) Fetch(packageName, osName, arch string) (string, error) {
 	workdir := m.workDir
-	if workdir == "" {
-		workdir = filepath.Join(os.TempDir(), "yurt/binaries")
-	}
 	o, ok := registry()[packageName]
 	if !ok {
 		return "", fmt.Errorf("unknown package name %q", packageName)
@@ -251,4 +278,91 @@ func (m *Manager) Fetch(packageName, osName, arch string) (string, error) {
 	err = os.Rename(packageExtractTmp, packageExtract)
 
 	return dldirToBinary(packageExtract, packageName)
+}
+
+// Work upwards through the directory tree starting at the current directory,
+// stopping when a directory named ".git" and a file named "go.mod" exists.
+// Intended for use in tests.
+func (m *Manager) projectRoot() (string, error) {
+	isProjectRoot := func(dir string) (bool, error) {
+		s, err := os.Stat(filepath.Join(dir, ".git"))
+		if err != nil {
+			if os.IsNotExist(err) {
+				return false, nil
+			}
+			return false, err
+		}
+		if !s.IsDir() {
+			return false, nil
+		}
+
+		s, err = os.Stat(filepath.Join(dir, "go.mod"))
+		if err != nil {
+			if os.IsNotExist(err) {
+				return false, nil
+			}
+			return false, err
+		}
+		if s.IsDir() {
+			return false, nil
+		}
+		return true, nil
+	}
+
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+
+	for dir[len(dir)-1] != filepath.Separator {
+		found, err := isProjectRoot(dir)
+		if err != nil {
+			return "", err
+		}
+		if found {
+			return dir, nil
+		}
+
+		dir = filepath.Dir(dir)
+	}
+
+	return "", fmt.Errorf("no project root found (looked for .git dir and go.mod file)")
+}
+
+func (m *Manager) buildLocalBin(name, osname, arch string) (string, error) {
+	proot, err := m.projectRoot()
+	if err != nil {
+		return "", err
+	}
+
+	fqfn, err := exec.LookPath("go")
+	if err != nil {
+		return "", fmt.Errorf("can't find 'go' in path: %v", err)
+	}
+
+	dest := filepath.Join(m.workDir, name)
+	cmd := exec.Command(fqfn, "build", "-o", dest)
+	cmd.Dir = filepath.Join(proot, "cmd", name)
+	for _, e := range os.Environ() {
+		switch {
+		case strings.HasPrefix(e, "GOOS="):
+		case strings.HasPrefix(e, "GOARCH="):
+		case strings.HasPrefix(e, "GO111MODULE="):
+		case strings.HasPrefix(e, "GOFLAGS="):
+		case strings.HasPrefix(e, "CGO_ENABLED="):
+		default:
+			cmd.Env = append(cmd.Env, e)
+		}
+	}
+	cmd.Env = append(cmd.Env, "GOOS="+osname, "GOARCH="+arch, "GO111MODULE=on", "GOFLAGS=-mod=")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	log.Print("running command:", cmd)
+
+	err = cmd.Run()
+	if err != nil {
+		return "", err
+	}
+
+	return dest, nil
 }
