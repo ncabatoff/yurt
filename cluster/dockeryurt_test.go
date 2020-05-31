@@ -18,8 +18,7 @@ func TestYurtRunCluster_Start(t *testing.T) {
 	numNodes := 3
 	var consulServerIPs []string
 	for i := 0; i < numNodes; i++ {
-		node := e.AllocNode(t.Name(), 0)
-		node.FirstPort = 0
+		node := e.AllocNode(t.Name(), yurt.Ports{})
 		nodes = append(nodes, node)
 		consulServerIPs = append(consulServerIPs, node.StaticIP)
 	}

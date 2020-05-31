@@ -26,10 +26,10 @@ type Node struct {
 	// services.  May also be the host name for some drivers.  May also be
 	// resolvable with some drivers, though not necessarily by the cluster
 	// creating code.
-	Name      string
-	FirstPort int
-	StaticIP  string
-	TLS       *pki.TLSConfigPEM
+	Name     string
+	Ports    Ports
+	StaticIP string
+	TLS      *pki.TLSConfigPEM
 }
 
 /*

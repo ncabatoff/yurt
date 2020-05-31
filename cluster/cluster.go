@@ -28,13 +28,12 @@ func NewConsulCluster(ctx context.Context, e runenv.Env, name string, nodeCount 
 	cluster := ConsulCluster{group: &errgroup.Group{}}
 	var nodes []yurt.Node
 	for i := 0; i < nodeCount; i++ {
-		node := e.AllocNode(name+"-consul-srv", 5)
+		node := e.AllocNode(name+"-consul-srv", consul.DefPorts().RunnerPorts())
 		nodes = append(nodes, node)
-		ports := consul.DefPorts().RunnerPorts().Sequential(node.FirstPort)
 		cluster.joinAddrs = append(cluster.joinAddrs,
-			fmt.Sprintf("%s:%d", node.StaticIP, ports.ByName[consul.PortNames.SerfLAN].Number))
+			fmt.Sprintf("%s:%d", node.StaticIP, node.Ports.ByName[consul.PortNames.SerfLAN].Number))
 		cluster.peerAddrs = append(cluster.peerAddrs,
-			fmt.Sprintf("%s:%d", node.StaticIP, ports.ByName[consul.PortNames.Server].Number))
+			fmt.Sprintf("%s:%d", node.StaticIP, node.Ports.ByName[consul.PortNames.Server].Number))
 	}
 
 	for _, node := range nodes {
@@ -62,7 +61,7 @@ type ConsulCluster struct {
 }
 
 func (c *ConsulCluster) Client(ctx context.Context, e runenv.Env, name string) (runner.Harness, error) {
-	return e.Run(ctx, consul.NewConfig(false, c.joinAddrs), e.AllocNode(name, 5))
+	return e.Run(ctx, consul.NewConfig(false, c.joinAddrs), e.AllocNode(name, consul.DefPorts().RunnerPorts()))
 }
 
 func (c *ConsulCluster) Wait() error {
@@ -79,11 +78,10 @@ func NewNomadCluster(ctx context.Context, e runenv.Env, name string, nodeCount i
 	cluster := NomadCluster{group: &errgroup.Group{}}
 	var nodes []yurt.Node
 	for i := 0; i < nodeCount; i++ {
-		node := e.AllocNode(name+"-nomad-srv", 5)
+		node := e.AllocNode(name+"-nomad-srv", nomad.DefPorts().RunnerPorts())
 		nodes = append(nodes, node)
-		ports := nomad.DefPorts().RunnerPorts().Sequential(node.FirstPort)
 		cluster.peerAddrs = append(cluster.peerAddrs,
-			fmt.Sprintf("%s:%d", node.StaticIP, ports.ByName[nomad.PortNames.RPC].Number))
+			fmt.Sprintf("%s:%d", node.StaticIP, node.Ports.ByName[nomad.PortNames.RPC].Number))
 	}
 
 	for _, node := range nodes {
@@ -140,7 +138,7 @@ func (c *NomadCluster) Stop() {
 func (c *NomadCluster) Client(ctx context.Context, e runenv.Env, name, consulAddr string) (runner.Harness, error) {
 	return e.Run(ctx, nomad.NomadConfig{
 		ConsulAddr: consulAddr,
-	}, e.AllocNode(name, 3))
+	}, e.AllocNode(name, nomad.DefPorts().RunnerPorts()))
 }
 
 type ConsulNomadCluster struct {

@@ -32,8 +32,7 @@ func init() {
 type Env interface {
 	// Run starts the specified command as the requested node.
 	Run(ctx context.Context, cmd runner.Command, node yurt.Node) (runner.Harness, error)
-	// TODO: instead of a numPorts, give it a runner.Ports?
-	AllocNode(baseName string, numPorts int) yurt.Node
+	AllocNode(baseName string, ports yurt.Ports) yurt.Node
 	Context() context.Context
 	Go(f func() error)
 }
@@ -99,32 +98,29 @@ func NewExecEnv(ctx context.Context, name, workDir string, firstPort int) (*Exec
 	}, nil
 }
 
-func (e ExecEnv) AllocNode(baseName string, numPorts int) yurt.Node {
+func (e ExecEnv) AllocNode(baseName string, ports yurt.Ports) yurt.Node {
 	name := fmt.Sprintf("%s-%d", baseName, e.nodes.Add(1))
-	lastPort := e.firstPort.Add(int32(numPorts))
+	lastPort := e.firstPort.Add(int32(len(ports.NameOrder)))
 	return yurt.Node{
-		Name:      name,
-		StaticIP:  "127.0.0.1",
-		FirstPort: int(lastPort) - numPorts,
+		Name:     name,
+		StaticIP: "127.0.0.1",
+		Ports:    ports.Sequential(int(lastPort) - len(ports.NameOrder)),
 	}
 }
 
 func (e ExecEnv) Run(ctx context.Context, cmd runner.Command, node yurt.Node) (runner.Harness, error) {
-	var config runner.Config
-	config.NodeName = node.Name
-	config.ConfigDir = filepath.Join(e.WorkDir, node.Name, "config")
-	config.DataDir = filepath.Join(e.WorkDir, node.Name, "data")
-	config.LogDir = filepath.Join(e.WorkDir, node.Name, "log")
-	if node.FirstPort != 0 {
-		config.Ports = cmd.Config().Ports.Sequential(node.FirstPort)
-	}
-
 	binPath, err := binaries.Default.Get(cmd.Name())
 	if err != nil {
 		return nil, err
 	}
 
-	r, err := exec.NewExecRunner(binPath, cmd, config)
+	r, err := exec.NewExecRunner(binPath, cmd, runner.Config{
+		NodeName:  node.Name,
+		ConfigDir: filepath.Join(e.WorkDir, node.Name, "config"),
+		DataDir:   filepath.Join(e.WorkDir, node.Name, "data"),
+		LogDir:    filepath.Join(e.WorkDir, node.Name, "log"),
+		Ports:     node.Ports,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -144,14 +140,14 @@ type DockerEnv struct {
 	nodes     *atomic.Int32
 }
 
-func (d *DockerEnv) AllocNode(baseName string, numPorts int) yurt.Node {
+func (d *DockerEnv) AllocNode(baseName string, ports yurt.Ports) yurt.Node {
 	name := fmt.Sprintf("%s-%d", baseName, d.nodes.Add(1))
 	i4 := sockaddr.ToIPv4Addr(d.NetConf.Network).NetIP().To4()
 	i4[3] = byte(d.curIPOct.Add(1))
 	return yurt.Node{
-		Name:      name,
-		FirstPort: 17000,
-		StaticIP:  i4.String(),
+		Name:     name,
+		Ports:    ports.Sequential(17000),
+		StaticIP: i4.String(),
 	}
 }
 
@@ -193,14 +189,6 @@ func NewDockerEnv(ctx context.Context, name, workDir, cidr string) (*DockerEnv, 
 }
 
 func (d *DockerEnv) Run(ctx context.Context, cmd runner.Command, node yurt.Node) (runner.Harness, error) {
-	var config runner.Config
-	config.ConfigDir = filepath.Join(d.WorkDir, node.Name, "config")
-	config.DataDir = filepath.Join(d.WorkDir, node.Name, "data")
-	config.LogDir = filepath.Join(d.WorkDir, node.Name, "log")
-	config.NetworkConfig = d.NetConf
-	config.NodeName = node.Name
-	config.Ports = cmd.Config().Ports.Sequential(node.FirstPort)
-
 	var image string
 	switch cmd.Name() {
 	case "consul":
@@ -210,7 +198,14 @@ func (d *DockerEnv) Run(ctx context.Context, cmd runner.Command, node yurt.Node)
 	default:
 		return nil, fmt.Errorf("unknown config %q", cmd.Name())
 	}
-	r, err := dockerrunner.NewDockerRunner(d.DockerAPI, image, node.StaticIP, cmd, config)
+	r, err := dockerrunner.NewDockerRunner(d.DockerAPI, image, node.StaticIP, cmd, runner.Config{
+		NodeName:      node.Name,
+		NetworkConfig: d.NetConf,
+		ConfigDir:     filepath.Join(d.WorkDir, node.Name, "config"),
+		DataDir:       filepath.Join(d.WorkDir, node.Name, "data"),
+		LogDir:        filepath.Join(d.WorkDir, node.Name, "log"),
+		Ports:         node.Ports,
+	})
 	if err != nil {
 		return nil, err
 	}

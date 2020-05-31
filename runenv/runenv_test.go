@@ -26,14 +26,12 @@ func TestConsulExecClient(t *testing.T) {
 }
 
 func runConsulServer(t *testing.T, e Env) runner.Harness {
-	node := e.AllocNode(t.Name()+"-consul", 5)
+	node := e.AllocNode(t.Name()+"-consul", consul.DefPorts().RunnerPorts())
 	command := consul.NewConfig(true, nil)
-	// TODO this is ugly: we're assuming a particular env implementation whereby
-	// ports are always allocated sequentially.  We should be able to get this
-	// from the env+command+node instead.  The IP is another matter.
-	ports := command.Config().Ports.Sequential(node.FirstPort)
-	command.JoinAddrs = []string{fmt.Sprintf("%s:%d", node.StaticIP, ports.ByName[consul.PortNames.SerfLAN].Number)}
-	expectedPeerAddrs := []string{fmt.Sprintf("%s:%d", node.StaticIP, ports.ByName[consul.PortNames.Server].Number)}
+	command.JoinAddrs = []string{fmt.Sprintf("%s:%d",
+		node.StaticIP, node.Ports.ByName[consul.PortNames.SerfLAN].Number)}
+	expectedPeerAddrs := []string{fmt.Sprintf("%s:%d",
+		node.StaticIP, node.Ports.ByName[consul.PortNames.Server].Number)}
 
 	h, err := e.Run(e.Context(), command, node)
 	if err != nil {
@@ -59,7 +57,7 @@ func runConsul(t *testing.T, e Env, server runner.Harness) runner.Harness {
 	command := consul.NewConfig(false, []string{serfAddr.Address.Host})
 	expectedPeerAddrs := []string{serverAddr.Address.Host}
 
-	h, err := e.Run(e.Context(), command, e.AllocNode("consul-cli", 5))
+	h, err := e.Run(e.Context(), command, e.AllocNode("consul-cli", consul.DefPorts().RunnerPorts()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +77,7 @@ func TestNomadExec(t *testing.T) {
 }
 
 func runNomad(t *testing.T, e Env, consulHarness runner.Harness) runner.Harness {
-	node := e.AllocNode(t.Name()+"-nomad", 3)
+	node := e.AllocNode(t.Name()+"-nomad", nomad.DefPorts().RunnerPorts())
 	consulAddr, err := consulHarness.Endpoint("http", false)
 	if err != nil {
 		t.Fatal(err)
