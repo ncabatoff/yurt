@@ -102,9 +102,9 @@ func (e ExecEnv) AllocNode(baseName string, ports yurt.Ports) yurt.Node {
 	name := fmt.Sprintf("%s-%d", baseName, e.nodes.Add(1))
 	lastPort := e.firstPort.Add(int32(len(ports.NameOrder)))
 	return yurt.Node{
-		Name:     name,
-		StaticIP: "127.0.0.1",
-		Ports:    ports.Sequential(int(lastPort) - len(ports.NameOrder)),
+		Name:  name,
+		Host:  "127.0.0.1",
+		Ports: ports.Sequential(int(lastPort) - len(ports.NameOrder)),
 	}
 }
 
@@ -145,9 +145,9 @@ func (d *DockerEnv) AllocNode(baseName string, ports yurt.Ports) yurt.Node {
 	i4 := sockaddr.ToIPv4Addr(d.NetConf.Network).NetIP().To4()
 	i4[3] = byte(d.curIPOct.Add(1))
 	return yurt.Node{
-		Name:     name,
-		Ports:    ports.Sequential(17000),
-		StaticIP: i4.String(),
+		Name:  name,
+		Ports: ports.Sequential(17000),
+		Host:  i4.String(),
 	}
 }
 
@@ -198,7 +198,7 @@ func (d *DockerEnv) Run(ctx context.Context, cmd runner.Command, node yurt.Node)
 	default:
 		return nil, fmt.Errorf("unknown config %q", cmd.Name())
 	}
-	r, err := dockerrunner.NewDockerRunner(d.DockerAPI, image, node.StaticIP, cmd, runner.Config{
+	r, err := dockerrunner.NewDockerRunner(d.DockerAPI, image, node.Host, cmd, runner.Config{
 		NodeName:      node.Name,
 		NetworkConfig: d.NetConf,
 		ConfigDir:     filepath.Join(d.WorkDir, node.Name, "config"),

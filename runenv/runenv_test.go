@@ -1,7 +1,6 @@
 package runenv
 
 import (
-	"fmt"
 	"github.com/ncabatoff/yurt/consul"
 	"github.com/ncabatoff/yurt/nomad"
 	"testing"
@@ -27,18 +26,22 @@ func TestConsulExecClient(t *testing.T) {
 
 func runConsulServer(t *testing.T, e Env) runner.Harness {
 	node := e.AllocNode(t.Name()+"-consul", consul.DefPorts().RunnerPorts())
-	command := consul.NewConfig(true, nil)
-	command.JoinAddrs = []string{fmt.Sprintf("%s:%d",
-		node.StaticIP, node.Ports.ByName[consul.PortNames.SerfLAN].Number)}
-	expectedPeerAddrs := []string{fmt.Sprintf("%s:%d",
-		node.StaticIP, node.Ports.ByName[consul.PortNames.Server].Number)}
+	joinAddr, err := node.Address(consul.PortNames.SerfLAN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := consul.NewConfig(true, []string{joinAddr})
 
 	h, err := e.Run(e.Context(), command, node)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if err := consul.LeadersHealthy(e.Context(), []runner.Harness{h}, expectedPeerAddrs); err != nil {
+	serverAddr, err := node.Address(consul.PortNames.Server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := consul.LeadersHealthy(e.Context(), []runner.Harness{h}, []string{serverAddr}); err != nil {
 		t.Fatal(err)
 	}
 	return h

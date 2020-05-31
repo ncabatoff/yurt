@@ -29,11 +29,19 @@ func NewConsulCluster(ctx context.Context, e runenv.Env, name string, nodeCount 
 	var nodes []yurt.Node
 	for i := 0; i < nodeCount; i++ {
 		node := e.AllocNode(name+"-consul-srv", consul.DefPorts().RunnerPorts())
+		joinAddr, err := node.Address(consul.PortNames.SerfLAN)
+		if err != nil {
+			return nil, err
+		}
+		cluster.joinAddrs = append(cluster.joinAddrs, joinAddr)
+
+		serverAddr, err := node.Address(consul.PortNames.Server)
+		if err != nil {
+			return nil, err
+		}
+		cluster.peerAddrs = append(cluster.peerAddrs, serverAddr)
+
 		nodes = append(nodes, node)
-		cluster.joinAddrs = append(cluster.joinAddrs,
-			fmt.Sprintf("%s:%d", node.StaticIP, node.Ports.ByName[consul.PortNames.SerfLAN].Number))
-		cluster.peerAddrs = append(cluster.peerAddrs,
-			fmt.Sprintf("%s:%d", node.StaticIP, node.Ports.ByName[consul.PortNames.Server].Number))
 	}
 
 	for _, node := range nodes {
@@ -81,7 +89,7 @@ func NewNomadCluster(ctx context.Context, e runenv.Env, name string, nodeCount i
 		node := e.AllocNode(name+"-nomad-srv", nomad.DefPorts().RunnerPorts())
 		nodes = append(nodes, node)
 		cluster.peerAddrs = append(cluster.peerAddrs,
-			fmt.Sprintf("%s:%d", node.StaticIP, node.Ports.ByName[nomad.PortNames.RPC].Number))
+			fmt.Sprintf("%s:%d", node.Host, node.Ports.ByName[nomad.PortNames.RPC].Number))
 	}
 
 	for _, node := range nodes {

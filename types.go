@@ -26,25 +26,20 @@ type Node struct {
 	// services.  May also be the host name for some drivers.  May also be
 	// resolvable with some drivers, though not necessarily by the cluster
 	// creating code.
-	Name     string
-	Ports    Ports
-	StaticIP string
-	TLS      *pki.TLSConfigPEM
+	Name  string
+	Ports Ports
+	Host  string
+	TLS   *pki.TLSConfigPEM
 }
 
-/*
-// Address returns the address of a service running on the node.
-func (n Node) Address(firstPortOffset int) string {
-	switch {
-	case n.FirstPort > 0:
-		return fmt.Sprintf("127.0.0.1:%d", n.FirstPort+firstPortOffset)
-	case n.StaticIP != "":
-		return n.StaticIP
-	default:
-		return n.Name
+// Address returns the host:port address of a service running on the node.
+func (n Node) Address(name string) (string, error) {
+	port := n.Ports.ByName[name]
+	if port.Number == 0 {
+		return "", fmt.Errorf("no address for service %q", name)
 	}
+	return fmt.Sprintf("%s:%d", n.Host, port.Number), nil
 }
-*/
 
 type NetworkConfig struct {
 	Network       sockaddr.SockAddr

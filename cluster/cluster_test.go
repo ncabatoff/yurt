@@ -3,13 +3,13 @@ package cluster
 import (
 	"context"
 	"fmt"
-	"github.com/ncabatoff/yurt/consul"
 	"testing"
 	"time"
 
 	consulapi "github.com/hashicorp/consul/api"
 	nomadapi "github.com/hashicorp/nomad/api"
 	"github.com/ncabatoff/yurt/binaries"
+	"github.com/ncabatoff/yurt/consul"
 	"github.com/ncabatoff/yurt/nomad"
 	"github.com/ncabatoff/yurt/runenv"
 	"github.com/ncabatoff/yurt/runner"
@@ -18,14 +18,12 @@ import (
 )
 
 func TestConsulExecCluster(t *testing.T) {
-	t.Parallel()
 	e, cleanup := runenv.NewExecTestEnv(t, 20*time.Second)
 	defer cleanup()
 	testConsulCluster(t, e)
 }
 
 func TestConsulDockerCluster(t *testing.T) {
-	t.Parallel()
 	e, cleanup := runenv.NewDockerTestEnv(t, 20*time.Second)
 	defer cleanup()
 	testConsulCluster(t, e)
@@ -54,7 +52,6 @@ func testConsulCluster(t *testing.T, e runenv.Env) {
 
 func TestNomadDockerCluster(t *testing.T) {
 	t.Skip("still need to copy prom bin into nomad client container for this to work")
-	t.Parallel()
 	e, cleanup := runenv.NewDockerTestEnv(t, 40*time.Second)
 	defer cleanup()
 
@@ -64,7 +61,6 @@ func TestNomadDockerCluster(t *testing.T) {
 }
 
 func TestNomadExecCluster(t *testing.T) {
-	t.Parallel()
 	e, cleanup := runenv.NewExecTestEnv(t, 40*time.Second)
 	defer cleanup()
 
