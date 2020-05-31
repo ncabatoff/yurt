@@ -38,7 +38,7 @@ func runConsulServer(t *testing.T, e Env) runner.Harness {
 		t.Fatal(err)
 	}
 
-	if err := runner.ConsulRunnersHealthy(e.Context(), []runner.Harness{h}, expectedPeerAddrs); err != nil {
+	if err := consul.LeadersHealthy(e.Context(), []runner.Harness{h}, expectedPeerAddrs); err != nil {
 		t.Fatal(err)
 	}
 	return h
@@ -62,7 +62,7 @@ func runConsul(t *testing.T, e Env, server runner.Harness) runner.Harness {
 		t.Fatal(err)
 	}
 
-	if err := runner.ConsulRunnersHealthy(e.Context(), []runner.Harness{h}, expectedPeerAddrs); err != nil {
+	if err := consul.LeadersHealthy(e.Context(), []runner.Harness{h}, expectedPeerAddrs); err != nil {
 		t.Fatal(err)
 	}
 	return h
@@ -94,7 +94,7 @@ func runNomad(t *testing.T, e Env, consulHarness runner.Harness) runner.Harness 
 		t.Fatal(err)
 	}
 	expectedPeerAddrs := []string{serverAddr.Address.Host}
-	if err := runner.NomadRunnersHealthy(e.Context(), []runner.Harness{nomadServer}, expectedPeerAddrs); err != nil {
+	if err := nomad.LeadersHealthy(e.Context(), []runner.Harness{nomadServer}, expectedPeerAddrs); err != nil {
 		t.Fatal(err)
 	}
 	return nomadServer

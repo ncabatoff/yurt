@@ -46,7 +46,7 @@ func NewConsulCluster(ctx context.Context, e runenv.Env, name string, nodeCount 
 		cluster.group.Go(h.Wait)
 	}
 
-	if err := runner.ConsulRunnersHealthy(ctx, cluster.servers, cluster.peerAddrs); err != nil {
+	if err := consul.LeadersHealthy(ctx, cluster.servers, cluster.peerAddrs); err != nil {
 		return nil, err
 	}
 
@@ -107,7 +107,7 @@ func NewNomadCluster(ctx context.Context, e runenv.Env, name string, nodeCount i
 		cluster.group.Go(nomadHarness.Wait)
 	}
 
-	if err := runner.NomadRunnersHealthy(ctx, cluster.servers, cluster.peerAddrs); err != nil {
+	if err := nomad.LeadersHealthy(ctx, cluster.servers, cluster.peerAddrs); err != nil {
 		cluster.Stop()
 		return nil, err
 	}

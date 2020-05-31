@@ -3,8 +3,6 @@ package runner
 import (
 	"context"
 	"fmt"
-	consulapi "github.com/hashicorp/consul/api"
-	nomadapi "github.com/hashicorp/nomad/api"
 	"github.com/ncabatoff/yurt"
 	"github.com/ncabatoff/yurt/pki"
 	"net/url"
@@ -76,36 +74,6 @@ type (
 	}
 )
 
-func ConsulRunnerToAPI(r Harness) (*consulapi.Client, error) {
-	apicfg, err := r.Endpoint("http", true)
-	if err != nil {
-		return nil, err
-	}
-	return consulapi.NewClient(ConsulAPIConfig(apicfg))
-}
-
-func ConsulAPIConfig(a *APIConfig) *consulapi.Config {
-	cfg := consulapi.DefaultConfig()
-	cfg.Address = a.Address.String()
-	cfg.TLSConfig.CAFile = a.CAFile
-	return cfg
-}
-
-func NomadRunnerToAPI(r Harness) (*nomadapi.Client, error) {
-	apicfg, err := r.Endpoint("http", true)
-	if err != nil {
-		return nil, err
-	}
-	return nomadapi.NewClient(NomadAPIConfig(apicfg))
-}
-
-func NomadAPIConfig(a *APIConfig) *nomadapi.Config {
-	cfg := nomadapi.DefaultConfig()
-	cfg.Address = a.Address.String()
-	cfg.TLSConfig.CACert = a.CAFile
-	return cfg
-}
-
 func LeaderAPIsHealthyNow(apis []LeaderAPI, expectedPeers []string) error {
 	var errs []error
 	var peers []string
@@ -148,52 +116,4 @@ func LeaderAPIsHealthy(ctx context.Context, apis []LeaderAPI, expectedPeers []st
 		time.Sleep(1000 * time.Millisecond)
 	}
 	return err
-}
-
-func ConsulLeaderAPIs(servers []Harness) ([]LeaderAPI, error) {
-	var ret []LeaderAPI
-	for _, server := range servers {
-		apicfg, err := server.Endpoint("http", true)
-		if err != nil {
-			return nil, err
-		}
-		api, err := consulapi.NewClient(ConsulAPIConfig(apicfg))
-		if err != nil {
-			return nil, err
-		}
-		ret = append(ret, api.Status())
-	}
-	return ret, nil
-}
-
-func NomadLeaderAPIs(servers []Harness) ([]LeaderAPI, error) {
-	var ret []LeaderAPI
-	for _, server := range servers {
-		apicfg, err := server.Endpoint("http", true)
-		if err != nil {
-			return nil, err
-		}
-		api, err := nomadapi.NewClient(NomadAPIConfig(apicfg))
-		if err != nil {
-			return nil, err
-		}
-		ret = append(ret, api.Status())
-	}
-	return ret, nil
-}
-
-func ConsulRunnersHealthy(ctx context.Context, servers []Harness, expectedPeers []string) error {
-	apis, err := ConsulLeaderAPIs(servers)
-	if err != nil {
-		return err
-	}
-	return LeaderAPIsHealthy(ctx, apis, expectedPeers)
-}
-
-func NomadRunnersHealthy(ctx context.Context, servers []Harness, expectedPeers []string) error {
-	apis, err := NomadLeaderAPIs(servers)
-	if err != nil {
-		return err
-	}
-	return LeaderAPIsHealthy(ctx, apis, expectedPeers)
 }

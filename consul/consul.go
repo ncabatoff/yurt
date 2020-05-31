@@ -1,12 +1,14 @@
 package consul
 
 import (
+	"context"
 	"fmt"
-	"github.com/ncabatoff/yurt"
-	"github.com/ncabatoff/yurt/runner"
 	"log"
 
+	consulapi "github.com/hashicorp/consul/api"
 	"github.com/hashicorp/vault/sdk/helper/jsonutil"
+	"github.com/ncabatoff/yurt"
+	"github.com/ncabatoff/yurt/runner"
 )
 
 type Ports struct {
@@ -184,4 +186,39 @@ performance {
 }
 `
 	return files
+}
+
+func HarnessToAPI(r runner.Harness) (*consulapi.Client, error) {
+	apicfg, err := r.Endpoint("http", true)
+	if err != nil {
+		return nil, err
+	}
+	return apiConfigToClient(apicfg)
+}
+
+func apiConfigToClient(a *runner.APIConfig) (*consulapi.Client, error) {
+	cfg := consulapi.DefaultConfig()
+	cfg.Address = a.Address.String()
+	cfg.TLSConfig.CAFile = a.CAFile
+	return consulapi.NewClient(cfg)
+}
+
+func consulLeaderAPIs(servers []runner.Harness) ([]runner.LeaderAPI, error) {
+	var ret []runner.LeaderAPI
+	for _, server := range servers {
+		api, err := HarnessToAPI(server)
+		if err != nil {
+			return nil, err
+		}
+		ret = append(ret, api.Status())
+	}
+	return ret, nil
+}
+
+func LeadersHealthy(ctx context.Context, servers []runner.Harness, expectedPeers []string) error {
+	apis, err := consulLeaderAPIs(servers)
+	if err != nil {
+		return err
+	}
+	return runner.LeaderAPIsHealthy(ctx, apis, expectedPeers)
 }

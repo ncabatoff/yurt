@@ -1,11 +1,14 @@
 package nomad
 
 import (
+	"context"
 	"fmt"
+	"log"
+
+	nomadapi "github.com/hashicorp/nomad/api"
 	"github.com/hashicorp/vault/sdk/helper/jsonutil"
 	"github.com/ncabatoff/yurt"
 	"github.com/ncabatoff/yurt/runner"
-	"log"
 )
 
 type Ports struct {
@@ -207,4 +210,39 @@ plugin "raw_exec" {
 `
 	}
 	return files
+}
+
+func HarnessToAPI(r runner.Harness) (*nomadapi.Client, error) {
+	apicfg, err := r.Endpoint("http", true)
+	if err != nil {
+		return nil, err
+	}
+	return apiConfigToClient(apicfg)
+}
+
+func apiConfigToClient(a *runner.APIConfig) (*nomadapi.Client, error) {
+	cfg := nomadapi.DefaultConfig()
+	cfg.Address = a.Address.String()
+	cfg.TLSConfig.CACert = a.CAFile
+	return nomadapi.NewClient(cfg)
+}
+
+func nomadLeaderAPIs(servers []runner.Harness) ([]runner.LeaderAPI, error) {
+	var ret []runner.LeaderAPI
+	for _, server := range servers {
+		api, err := HarnessToAPI(server)
+		if err != nil {
+			return nil, err
+		}
+		ret = append(ret, api.Status())
+	}
+	return ret, nil
+}
+
+func LeadersHealthy(ctx context.Context, servers []runner.Harness, expectedPeers []string) error {
+	apis, err := nomadLeaderAPIs(servers)
+	if err != nil {
+		return err
+	}
+	return runner.LeaderAPIsHealthy(ctx, apis, expectedPeers)
 }

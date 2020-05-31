@@ -3,12 +3,14 @@ package cluster
 import (
 	"context"
 	"fmt"
-	"github.com/ncabatoff/yurt/binaries"
+	"github.com/ncabatoff/yurt/consul"
 	"testing"
 	"time"
 
 	consulapi "github.com/hashicorp/consul/api"
 	nomadapi "github.com/hashicorp/nomad/api"
+	"github.com/ncabatoff/yurt/binaries"
+	"github.com/ncabatoff/yurt/nomad"
 	"github.com/ncabatoff/yurt/runenv"
 	"github.com/ncabatoff/yurt/runner"
 	promapi "github.com/prometheus/client_golang/api"
@@ -45,7 +47,7 @@ func testConsulCluster(t *testing.T, e runenv.Env) {
 
 	client, err := cluster.Client(e.Context(), e, t.Name()+"-consul-cli")
 	e.Go(client.Wait)
-	if err := runner.ConsulRunnersHealthy(e.Context(), []runner.Harness{client}, cluster.peerAddrs); err != nil {
+	if err := consul.LeadersHealthy(e.Context(), []runner.Harness{client}, cluster.peerAddrs); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -84,24 +86,24 @@ func testNomadCluster(t *testing.T, e runenv.Env, job string) {
 	defer nomadClient.Stop()
 	e.Go(nomadClient.Wait)
 
-	consul, err := runner.ConsulRunnerToAPI(cnc.Consul.servers[0])
+	consulCli, err := consul.HarnessToAPI(cnc.Consul.servers[0])
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	nomad, err := runner.NomadRunnerToAPI(cnc.Nomad.servers[0])
+	nomadCli, err := nomad.HarnessToAPI(cnc.Nomad.servers[0])
 	if err != nil {
 		t.Fatal(err)
 	}
-	testJobs(t, e.Context(), consul, nomad, job)
+	testJobs(t, e.Context(), consulCli, nomadCli, job)
 }
 
-func testJobs(t *testing.T, ctx context.Context, consul *consulapi.Client, nomad *nomadapi.Client, jobhcl string) {
-	job, err := nomad.Jobs().ParseHCL(jobhcl, true)
+func testJobs(t *testing.T, ctx context.Context, consulCli *consulapi.Client, nomadCli *nomadapi.Client, jobhcl string) {
+	job, err := nomadCli.Jobs().ParseHCL(jobhcl, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	register, _, err := nomad.Jobs().Register(job, nil)
+	register, _, err := nomadCli.Jobs().Register(job, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +112,7 @@ func testJobs(t *testing.T, ctx context.Context, consul *consulapi.Client, nomad
 	}
 
 	defer func() {
-		_, _, err := nomad.Jobs().Deregister(*job.ID, false, nil)
+		_, _, err := nomadCli.Jobs().Deregister(*job.ID, false, nil)
 		if err != nil {
 			return
 		}
@@ -118,7 +120,7 @@ func testJobs(t *testing.T, ctx context.Context, consul *consulapi.Client, nomad
 		deadline := time.Now().Add(10 * time.Second)
 		for time.Now().Before(deadline) {
 			time.Sleep(100 * time.Millisecond)
-			resp, _, err := nomad.Jobs().Summary(*job.ID, nil)
+			resp, _, err := nomadCli.Jobs().Summary(*job.ID, nil)
 			if err != nil {
 				continue
 			}
@@ -135,9 +137,9 @@ func testJobs(t *testing.T, ctx context.Context, consul *consulapi.Client, nomad
 	var promaddr string
 	for time.Now().Before(deadline) {
 		time.Sleep(100 * time.Millisecond)
-		svcs, _, err := consul.Catalog().Service("prometheus", "", nil)
+		svcs, _, err := consulCli.Catalog().Service("prometheus", "", nil)
 		if err != nil {
-			t.Fatal(err, consul)
+			t.Fatal(err, consulCli)
 		}
 		if len(svcs) != 0 {
 			t.Log(svcs[0])
