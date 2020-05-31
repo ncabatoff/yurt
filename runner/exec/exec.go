@@ -3,7 +3,7 @@ package exec
 import (
 	"context"
 	"fmt"
-	"net/url"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,84 +14,85 @@ import (
 
 type ExecRunner struct {
 	command runner.Command
+	config  runner.Config
 	BinPath string
-	cmd     *exec.Cmd
-	cancel  func()
 }
 
-var _ runner.Runner = (*ExecRunner)(nil)
+type harness struct {
+	cancel func()
+	config runner.Config
+	cmd    *exec.Cmd
+}
 
-func NewExecRunner(binPath string, command runner.Command) (*ExecRunner, error) {
+var _ runner.Harness = &harness{}
+
+func NewExecRunner(binPath string, command runner.Command, config runner.Config) (*ExecRunner, error) {
 	return &ExecRunner{
+		config:  config,
 		command: command,
 		BinPath: binPath,
 	}, nil
 }
 
-func (e *ExecRunner) Command() runner.Command {
-	return e.command
-}
-
 // Start launches the process
-func (e *ExecRunner) Start(ctx context.Context) (string, error) {
-	if e.cmd != nil {
-		return "", fmt.Errorf("already running")
-	}
-
-	cfg := e.command.Config()
-	for _, dir := range []string{cfg.DataDir, cfg.LogDir} {
+func (e *ExecRunner) Start(ctx context.Context) (*harness, error) {
+	for _, dir := range []string{e.config.DataDir, e.config.LogDir} {
 		if dir != "" {
 			if err := os.MkdirAll(dir, 0755); err != nil {
-				return "", err
+				return nil, err
 			}
 		}
 	}
-	for name, contents := range e.command.Files() {
-		if err := util.WriteConfig(cfg.ConfigDir, name, contents); err != nil {
-			return "", err
+	command := e.command.WithConfig(e.config)
+	for name, contents := range command.Files() {
+		if err := util.WriteConfig(e.config.ConfigDir, name, contents); err != nil {
+			return nil, err
 		}
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
-	cmd := exec.CommandContext(ctx, e.BinPath, e.command.Args()...)
-	cmd.Env = e.command.Env()
-	cmd.Dir = cfg.ConfigDir
-	//fmt.Fprintln(os.Stderr, cmd)
-	cmd.Stdout = util.NewOutputWriter(cfg.NodeName, os.Stdout)
-	cmd.Stderr = util.NewOutputWriter(cfg.NodeName, os.Stderr)
+	cmd := exec.CommandContext(ctx, e.BinPath, command.Args()...)
+	cmd.Env = command.Env()
+	cmd.Dir = e.config.ConfigDir
+	log.Println(cmd)
+	cmd.Stdout = util.NewOutputWriter(e.config.NodeName, os.Stdout)
+	cmd.Stderr = util.NewOutputWriter(e.config.NodeName, os.Stderr)
 
 	if err := cmd.Start(); err != nil {
-		return "", err
+		return nil, err
 	}
 
-	e.cmd = cmd
-	e.cancel = cancel
-	return "127.0.0.1", nil
+	return &harness{
+		config: command.Config(),
+		cancel: cancel,
+		cmd:    cmd,
+	}, nil
 }
 
-func (e *ExecRunner) APIConfig() (*runner.APIConfig, error) {
-	apiConfig := runner.APIConfig{Address: url.URL{Scheme: "http"}}
-
-	cfg := e.command.Config()
-	if cfg.APIPort == 0 {
-		return nil, fmt.Errorf("no API port defined in config")
+func (h harness) Endpoint(name string, local bool) (*runner.APIConfig, error) {
+	port := h.config.Ports.ByName[name]
+	if port.Number == 0 {
+		return nil, fmt.Errorf("no port %q defined in config", name)
 	}
 
-	if len(cfg.TLS.Cert) > 0 {
-		apiConfig.Address.Scheme = "https"
-		apiConfig.CAFile = filepath.Join(cfg.ConfigDir, "ca.pem")
+	var apiConfig runner.APIConfig
+	if len(h.config.TLS.Cert) > 0 {
+		if name == "http" {
+			name = "https"
+		}
+		apiConfig.CAFile = filepath.Join(h.config.ConfigDir, "ca.pem")
 	}
-
-	apiConfig.Address.Host = fmt.Sprintf("%s:%d", "127.0.0.1", cfg.APIPort)
+	apiConfig.Address.Scheme = name
+	apiConfig.Address.Host = fmt.Sprintf("%s:%d", "127.0.0.1", port.Number)
 
 	return &apiConfig, nil
 }
 
-func (e *ExecRunner) Wait() error {
-	return e.cmd.Wait()
+func (h harness) Wait() error {
+	return h.cmd.Wait()
 }
 
-func (e *ExecRunner) Stop() error {
-	e.cancel()
+func (h harness) Stop() error {
+	h.cancel()
 	return nil
 }

@@ -2,110 +2,125 @@ package runenv
 
 import (
 	"fmt"
+	"github.com/ncabatoff/yurt/consul"
+	"github.com/ncabatoff/yurt/nomad"
 	"testing"
 	"time"
 
-	"github.com/ncabatoff/yurt"
 	"github.com/ncabatoff/yurt/runner"
 )
 
 func TestConsulExec(t *testing.T) {
-	e, cleanup := NewExecTestEnv(t, 30*time.Second)
+	e, cleanup := NewExecTestEnv(t, 5*time.Second)
 	defer cleanup()
-	r, _ := runConsulServer(t, e)
-	e.Go(r.Wait)
+
+	e.Go(runConsulServer(t, e).Wait)
 }
 
 func TestConsulExecClient(t *testing.T) {
-	e, cleanup := NewExecTestEnv(t, 30*time.Second)
+	e, cleanup := NewExecTestEnv(t, 5*time.Second)
 	defer cleanup()
-	r, server := runConsulServer(t, e)
-	e.Go(r.Wait)
-	runConsul(t, e, &server)
+	consulHarness := runConsulServer(t, e)
+	e.Go(consulHarness.Wait)
+	runConsul(t, e, consulHarness)
 }
 
-func runConsulServer(t *testing.T, e Env) (runner.APIRunner, yurt.Node) {
-	return runConsul(t, e, nil)
-}
-
-func runConsul(t *testing.T, e Env, server *yurt.Node) (runner.APIRunner, yurt.Node) {
+func runConsulServer(t *testing.T, e Env) runner.Harness {
 	node := e.AllocNode(t.Name()+"-consul", 5)
-	ports := runner.SeqConsulPorts(node.FirstPort)
-	var command runner.Command = &runner.ConsulServerConfig{
-		ConsulConfig: runner.ConsulConfig{
-			JoinAddrs: []string{fmt.Sprintf("%s:%d", node.StaticIP, ports.SerfLAN)},
-		},
-	}
-	expectedPeerAddrs := []string{fmt.Sprintf("%s:%d", node.StaticIP, ports.Server)}
-	if server != nil {
-		command = &runner.ConsulConfig{
-			JoinAddrs: []string{fmt.Sprintf("%s:%d", server.StaticIP, runner.SeqConsulPorts(server.FirstPort).SerfLAN)},
-		}
-		expectedPeerAddrs = []string{fmt.Sprintf("%s:%d", server.StaticIP, runner.SeqConsulPorts(server.FirstPort).Server)}
-	}
+	command := consul.NewConfig(true, nil)
+	// TODO this is ugly: we're assuming a particular env implementation whereby
+	// ports are always allocated sequentially.  We should be able to get this
+	// from the env+command+node instead.  The IP is another matter.
+	ports := command.Config().Ports.Sequential(node.FirstPort)
+	command.JoinAddrs = []string{fmt.Sprintf("%s:%d", node.StaticIP, ports.ByName[consul.PortNames.SerfLAN].Number)}
+	expectedPeerAddrs := []string{fmt.Sprintf("%s:%d", node.StaticIP, ports.ByName[consul.PortNames.Server].Number)}
 
-	r, node, err := e.Run(e.Context(), command, node)
+	h, err := e.Run(e.Context(), command, node)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if err := runner.ConsulRunnersHealthy(e.Context(), []runner.ConsulRunner{r}, expectedPeerAddrs); err != nil {
+	if err := runner.ConsulRunnersHealthy(e.Context(), []runner.Harness{h}, expectedPeerAddrs); err != nil {
 		t.Fatal(err)
 	}
-	return r, node
+	return h
+}
+
+// Start a consul agent in client mode, joining to the provided consul server.
+func runConsul(t *testing.T, e Env, server runner.Harness) runner.Harness {
+	serfAddr, err := server.Endpoint(consul.PortNames.SerfLAN, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverAddr, err := server.Endpoint(consul.PortNames.Server, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := consul.NewConfig(false, []string{serfAddr.Address.Host})
+	expectedPeerAddrs := []string{serverAddr.Address.Host}
+
+	h, err := e.Run(e.Context(), command, e.AllocNode("consul-cli", 5))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runner.ConsulRunnersHealthy(e.Context(), []runner.Harness{h}, expectedPeerAddrs); err != nil {
+		t.Fatal(err)
+	}
+	return h
 }
 
 func TestNomadExec(t *testing.T) {
-	e, cleanup := NewExecTestEnv(t, 30*time.Second)
+	e, cleanup := NewExecTestEnv(t, 10*time.Second)
 	defer cleanup()
-	consul, consulNode := runConsulServer(t, e)
-	nomad, _ := runNomad(t, e, consulNode)
-	e.Go(consul.Wait)
-	e.Go(nomad.Wait)
+	consulHarness := runConsulServer(t, e)
+	e.Go(consulHarness.Wait)
+	e.Go(runNomad(t, e, consulHarness).Wait)
 }
 
-func runNomad(t *testing.T, e Env, consulNode yurt.Node) (runner.APIRunner, yurt.Node) {
-	node := e.AllocNode(t.Name()+"-nomad", 5)
-	ports := runner.SeqNomadPorts(node.FirstPort)
-	cfg := runner.NomadServerConfig{
-		BootstrapExpect: 1,
-		NomadConfig: runner.NomadConfig{
-			ConsulAddr: fmt.Sprintf("%s:%d", consulNode.StaticIP, runner.SeqConsulPorts(consulNode.FirstPort).HTTP),
-		},
-	}
-
-	r, node, err := e.Run(e.Context(), cfg, node)
+func runNomad(t *testing.T, e Env, consulHarness runner.Harness) runner.Harness {
+	node := e.AllocNode(t.Name()+"-nomad", 3)
+	consulAddr, err := consulHarness.Endpoint("http", false)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	expectedPeerAddrs := []string{fmt.Sprintf("%s:%d", node.StaticIP, ports.RPC)}
-	if err := runner.NomadRunnersHealthy(e.Context(), []runner.NomadRunner{r}, expectedPeerAddrs); err != nil {
+	command := nomad.NewConfig(1, consulAddr.Address.Host)
+	nomadServer, err := e.Run(e.Context(), command, node)
+	if err != nil {
 		t.Fatal(err)
 	}
-	return r, node
+
+	serverAddr, err := nomadServer.Endpoint(nomad.PortNames.RPC, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedPeerAddrs := []string{serverAddr.Address.Host}
+	if err := runner.NomadRunnersHealthy(e.Context(), []runner.Harness{nomadServer}, expectedPeerAddrs); err != nil {
+		t.Fatal(err)
+	}
+	return nomadServer
 }
 
 func TestConsulDocker(t *testing.T) {
-	e, cleanup := NewDockerTestEnv(t, 30*time.Second)
+	e, cleanup := NewDockerTestEnv(t, 10*time.Second)
 	defer cleanup()
-	r, _ := runConsulServer(t, e)
-	e.Go(r.Wait)
+	e.Go(runConsulServer(t, e).Wait)
 }
 
 func TestConsulDockerClient(t *testing.T) {
-	e, cleanup := NewDockerTestEnv(t, 30*time.Second)
+	e, cleanup := NewDockerTestEnv(t, 10*time.Second)
 	defer cleanup()
-	r, server := runConsulServer(t, e)
-	e.Go(r.Wait)
-	runConsul(t, e, &server)
+	h := runConsulServer(t, e)
+	e.Go(h.Wait)
+	runConsul(t, e, h)
 }
 
 func TestNomadDocker(t *testing.T) {
-	e, cleanup := NewDockerTestEnv(t, 30*time.Second)
+	e, cleanup := NewDockerTestEnv(t, 15*time.Second)
 	defer cleanup()
-	consul, consulNode := runConsulServer(t, e)
-	nomad, _ := runNomad(t, e, consulNode)
+	consul := runConsulServer(t, e)
+	nomad := runNomad(t, e, consul)
 	e.Go(consul.Wait)
 	e.Go(nomad.Wait)
 }

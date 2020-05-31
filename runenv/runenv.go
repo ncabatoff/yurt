@@ -31,9 +31,8 @@ func init() {
 
 type Env interface {
 	// Run starts the specified command as the requested node.
-	Run(ctx context.Context, cmd runner.Command, node yurt.Node) (runner.APIRunner, yurt.Node, error)
-	// IP returns the IP of a node that was previously passed to Run without error.
-	IP(node yurt.Node) (string, error)
+	Run(ctx context.Context, cmd runner.Command, node yurt.Node) (runner.Harness, error)
+	// TODO: instead of a numPorts, give it a runner.Ports?
 	AllocNode(baseName string, numPorts int) yurt.Node
 	Context() context.Context
 	Go(f func() error)
@@ -88,7 +87,6 @@ type ExecEnv struct {
 
 var _ Env = &ExecEnv{}
 
-// TODO randomize firstport when 0?
 func NewExecEnv(ctx context.Context, name, workDir string, firstPort int) (*ExecEnv, error) {
 	e, err := NewBaseEnv(ctx, workDir)
 	if err != nil {
@@ -103,48 +101,44 @@ func NewExecEnv(ctx context.Context, name, workDir string, firstPort int) (*Exec
 
 func (e ExecEnv) AllocNode(baseName string, numPorts int) yurt.Node {
 	name := fmt.Sprintf("%s-%d", baseName, e.nodes.Add(1))
+	lastPort := e.firstPort.Add(int32(numPorts))
 	return yurt.Node{
 		Name:      name,
 		StaticIP:  "127.0.0.1",
-		FirstPort: int(e.firstPort.Add(int32(numPorts))),
-		WorkDir:   filepath.Join(e.BaseEnv.WorkDir, name),
+		FirstPort: int(lastPort) - numPorts,
 	}
 }
 
-func (e ExecEnv) Run(ctx context.Context, cmd runner.Command, node yurt.Node) (runner.APIRunner, yurt.Node, error) {
-	confDir := filepath.Join(e.WorkDir, node.Name, "config")
-	dataDir := filepath.Join(e.WorkDir, node.Name, "data")
-	logDir := filepath.Join(e.WorkDir, node.Name, "log")
-	cmd = cmd.WithDirs(confDir, dataDir, logDir).WithName(node.Name)
-	if cmd.Config().Ports[0][0] == '0' {
-		cmd = cmd.WithPorts(node.FirstPort)
+func (e ExecEnv) Run(ctx context.Context, cmd runner.Command, node yurt.Node) (runner.Harness, error) {
+	var config runner.Config
+	config.NodeName = node.Name
+	config.ConfigDir = filepath.Join(e.WorkDir, node.Name, "config")
+	config.DataDir = filepath.Join(e.WorkDir, node.Name, "data")
+	config.LogDir = filepath.Join(e.WorkDir, node.Name, "log")
+	if node.FirstPort != 0 {
+		config.Ports = cmd.Config().Ports.Sequential(node.FirstPort)
 	}
 
-	binPath, err := binaries.Default.Get(cmd.Config().Name)
+	binPath, err := binaries.Default.Get(cmd.Name())
 	if err != nil {
-		return nil, yurt.Node{}, err
+		return nil, err
 	}
 
-	r, err := exec.NewExecRunner(binPath, cmd)
+	r, err := exec.NewExecRunner(binPath, cmd, config)
 	if err != nil {
-		return nil, yurt.Node{}, err
+		return nil, err
 	}
-	_, err = r.Start(ctx)
+	h, err := r.Start(ctx)
 	if err != nil {
-		return nil, yurt.Node{}, fmt.Errorf("error starting server: %w", err)
+		return nil, fmt.Errorf("error starting server: %w", err)
 	}
-	return r, node, nil
-}
-
-func (e ExecEnv) IP(node yurt.Node) (string, error) {
-	return "127.0.0.1", nil
+	return h, nil
 }
 
 type DockerEnv struct {
 	BaseEnv
 	DockerAPI *dockerapi.Client
 	NetConf   yurt.NetworkConfig
-	ips       map[string]string
 	baseCIDR  net.IPNet
 	curIPOct  *atomic.Int32
 	nodes     *atomic.Int32
@@ -158,7 +152,6 @@ func (d *DockerEnv) AllocNode(baseName string, numPorts int) yurt.Node {
 		Name:      name,
 		FirstPort: 17000,
 		StaticIP:  i4.String(),
-		WorkDir:   filepath.Join(d.BaseEnv.WorkDir, name),
 	}
 }
 
@@ -194,46 +187,38 @@ func NewDockerEnv(ctx context.Context, name, workDir, cidr string) (*DockerEnv, 
 			Network:       sa,
 		},
 		DockerAPI: cli,
-		ips:       make(map[string]string),
 		nodes:     atomic.NewInt32(0),
 		curIPOct:  atomic.NewInt32(1),
 	}, nil
 }
 
-func (d *DockerEnv) Run(ctx context.Context, cmd runner.Command, node yurt.Node) (runner.APIRunner, yurt.Node, error) {
-	confDir := filepath.Join(d.WorkDir, node.Name, "config")
-	dataDir := filepath.Join(d.WorkDir, node.Name, "data")
-	logDir := filepath.Join(d.WorkDir, node.Name, "log")
-	cmd = cmd.WithDirs(confDir, dataDir, logDir).WithPorts(node.FirstPort).WithNetwork(d.NetConf).WithName(node.Name)
+func (d *DockerEnv) Run(ctx context.Context, cmd runner.Command, node yurt.Node) (runner.Harness, error) {
+	var config runner.Config
+	config.ConfigDir = filepath.Join(d.WorkDir, node.Name, "config")
+	config.DataDir = filepath.Join(d.WorkDir, node.Name, "data")
+	config.LogDir = filepath.Join(d.WorkDir, node.Name, "log")
+	config.NetworkConfig = d.NetConf
+	config.NodeName = node.Name
+	config.Ports = cmd.Config().Ports.Sequential(node.FirstPort)
 
 	var image string
-	switch cmd.Config().Name {
+	switch cmd.Name() {
 	case "consul":
 		image = "consul:1.7.0-beta4"
 	case "nomad":
 		image = "noenv/nomad:0.10.3"
 	default:
-		return nil, yurt.Node{}, fmt.Errorf("unknown config %q", cmd.Config().Name)
+		return nil, fmt.Errorf("unknown config %q", cmd.Name())
 	}
-	r, err := dockerrunner.NewDockerRunner(d.DockerAPI, image, node.StaticIP, cmd)
+	r, err := dockerrunner.NewDockerRunner(d.DockerAPI, image, node.StaticIP, cmd, config)
 	if err != nil {
-		return nil, yurt.Node{}, err
+		return nil, err
 	}
-	ip, err := r.Start(ctx)
+	h, err := r.Start(ctx)
 	if err != nil {
-		return nil, yurt.Node{}, fmt.Errorf("error starting server: %w", err)
+		return nil, fmt.Errorf("error starting server: %w", err)
 	}
-	node.StaticIP = ip
-	d.ips[node.Name] = ip
-	return r, node, nil
-}
-
-func (d *DockerEnv) IP(node yurt.Node) (string, error) {
-	name := d.ips[node.Name]
-	if name == "" {
-		return "", fmt.Errorf("node not running")
-	}
-	return name, nil
+	return h, nil
 }
 
 var _ Env = &DockerEnv{}
@@ -270,5 +255,4 @@ func NewExecTestEnv(t *testing.T, timeout time.Duration) (*ExecEnv, func()) {
 			t.Log(err)
 		}
 	}
-
 }

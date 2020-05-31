@@ -3,6 +3,8 @@ package cluster
 import (
 	"context"
 	"fmt"
+	"github.com/ncabatoff/yurt/consul"
+	"github.com/ncabatoff/yurt/nomad"
 	"github.com/ncabatoff/yurt/runenv"
 
 	"github.com/ncabatoff/yurt"
@@ -28,21 +30,21 @@ func NewConsulCluster(ctx context.Context, e runenv.Env, name string, nodeCount 
 	for i := 0; i < nodeCount; i++ {
 		node := e.AllocNode(name+"-consul-srv", 5)
 		nodes = append(nodes, node)
-		ports := runner.SeqConsulPorts(node.FirstPort)
-		cluster.joinAddrs = append(cluster.joinAddrs, fmt.Sprintf("%s:%d", node.StaticIP, ports.SerfLAN))
-		cluster.peerAddrs = append(cluster.peerAddrs, fmt.Sprintf("%s:%d", node.StaticIP, ports.Server))
+		ports := consul.DefPorts().RunnerPorts().Sequential(node.FirstPort)
+		cluster.joinAddrs = append(cluster.joinAddrs,
+			fmt.Sprintf("%s:%d", node.StaticIP, ports.ByName[consul.PortNames.SerfLAN].Number))
+		cluster.peerAddrs = append(cluster.peerAddrs,
+			fmt.Sprintf("%s:%d", node.StaticIP, ports.ByName[consul.PortNames.Server].Number))
 	}
 
 	for _, node := range nodes {
-		cfg := runner.ConsulServerConfig{ConsulConfig: runner.ConsulConfig{
-			JoinAddrs: cluster.joinAddrs,
-		}}
-		r, _, err := e.Run(ctx, cfg, node)
+		cfg := consul.NewConfig(true, cluster.joinAddrs)
+		h, err := e.Run(ctx, cfg, node)
 		if err != nil {
 			return nil, err
 		}
-		cluster.servers = append(cluster.servers, r)
-		cluster.group.Go(r.Wait)
+		cluster.servers = append(cluster.servers, h)
+		cluster.group.Go(h.Wait)
 	}
 
 	if err := runner.ConsulRunnersHealthy(ctx, cluster.servers, cluster.peerAddrs); err != nil {
@@ -53,14 +55,14 @@ func NewConsulCluster(ctx context.Context, e runenv.Env, name string, nodeCount 
 }
 
 type ConsulCluster struct {
-	servers   []runner.ConsulRunner
+	servers   []runner.Harness
 	group     *errgroup.Group
 	joinAddrs []string
 	peerAddrs []string
 }
 
-func (c *ConsulCluster) Client(ctx context.Context, e runenv.Env, name string) (runner.ConsulRunner, yurt.Node, error) {
-	return e.Run(ctx, runner.ConsulConfig{JoinAddrs: c.joinAddrs}, e.AllocNode(name, 5))
+func (c *ConsulCluster) Client(ctx context.Context, e runenv.Env, name string) (runner.Harness, error) {
+	return e.Run(ctx, consul.NewConfig(false, c.joinAddrs), e.AllocNode(name, 5))
 }
 
 func (c *ConsulCluster) Wait() error {
@@ -79,31 +81,32 @@ func NewNomadCluster(ctx context.Context, e runenv.Env, name string, nodeCount i
 	for i := 0; i < nodeCount; i++ {
 		node := e.AllocNode(name+"-nomad-srv", 5)
 		nodes = append(nodes, node)
-		ports := runner.SeqNomadPorts(node.FirstPort)
-		cluster.peerAddrs = append(cluster.peerAddrs, fmt.Sprintf("%s:%d", node.StaticIP, ports.RPC))
+		ports := nomad.DefPorts().RunnerPorts().Sequential(node.FirstPort)
+		cluster.peerAddrs = append(cluster.peerAddrs,
+			fmt.Sprintf("%s:%d", node.StaticIP, ports.ByName[nomad.PortNames.RPC].Number))
 	}
 
 	for _, node := range nodes {
-		consul, consulNode, err := consulCluster.Client(ctx, e, name+"-consul-cli")
+		consulHarness, err := consulCluster.Client(ctx, e, name+"-consul-cli")
 		if err != nil {
 			return nil, err
 		}
-		cluster.consulAgents = append(cluster.consulAgents, consul)
-		cluster.group.Go(consul.Wait)
+		cluster.consulAgents = append(cluster.consulAgents, consulHarness)
+		cluster.group.Go(consulHarness.Wait)
 
-		cfg := runner.NomadServerConfig{
-			BootstrapExpect: nodeCount,
-			NomadConfig: runner.NomadConfig{
-				ConsulAddr: fmt.Sprintf("%s:%d", consulNode.StaticIP, consul.Command().Config().APIPort),
-			},
-		}
-		r, _, err := e.Run(ctx, cfg, node)
+		consulAddr, err := consulHarness.Endpoint("http", false)
 		if err != nil {
 			cluster.Stop()
 			return nil, err
 		}
-		cluster.servers = append(cluster.servers, r)
-		cluster.group.Go(r.Wait)
+		cfg := nomad.NewConfig(nodeCount, consulAddr.Address.Host)
+		nomadHarness, err := e.Run(ctx, cfg, node)
+		if err != nil {
+			cluster.Stop()
+			return nil, err
+		}
+		cluster.servers = append(cluster.servers, nomadHarness)
+		cluster.group.Go(nomadHarness.Wait)
 	}
 
 	if err := runner.NomadRunnersHealthy(ctx, cluster.servers, cluster.peerAddrs); err != nil {
@@ -115,8 +118,8 @@ func NewNomadCluster(ctx context.Context, e runenv.Env, name string, nodeCount i
 }
 
 type NomadCluster struct {
-	consulAgents []runner.ConsulRunner
-	servers      []runner.NomadRunner
+	consulAgents []runner.Harness
+	servers      []runner.Harness
 	group        *errgroup.Group
 	peerAddrs    []string
 }
@@ -134,11 +137,9 @@ func (c *NomadCluster) Stop() {
 	}
 }
 
-func (c *NomadCluster) Client(ctx context.Context, e runenv.Env, name, consulAddr string) (runner.NomadRunner, yurt.Node, error) {
-	return e.Run(ctx, runner.NomadClientConfig{
-		NomadConfig: runner.NomadConfig{
-			ConsulAddr: consulAddr,
-		},
+func (c *NomadCluster) Client(ctx context.Context, e runenv.Env, name, consulAddr string) (runner.Harness, error) {
+	return e.Run(ctx, nomad.NomadConfig{
+		ConsulAddr: consulAddr,
 	}, e.AllocNode(name, 3))
 }
 
@@ -181,35 +182,38 @@ func (c *ConsulNomadCluster) Stop() {
 }
 
 type NomadClient struct {
-	runner.ConsulRunner
-	runner.NomadRunner
+	ConsulHarness runner.Harness
+	NomadHarness  runner.Harness
 }
 
 func (c *ConsulNomadCluster) NomadClient(e runenv.Env) (*NomadClient, error) {
-	consulClient, consulClientNode, err := c.Consul.Client(e.Context(), e, c.Name+"-consul-cli")
+	consulHarness, err := c.Consul.Client(e.Context(), e, c.Name+"-consul-cli")
 	if err != nil {
 		return nil, err
 	}
-	consulAddr := fmt.Sprintf("%s:%d", consulClientNode.StaticIP, consulClient.Command().Config().APIPort)
-	nomadClient, _, err := c.Nomad.Client(e.Context(), e, c.Name+"-nomad-cli", consulAddr)
+	consulAddr, err := consulHarness.Endpoint("http", false)
 	if err != nil {
-		_ = consulClient.Stop()
+		return nil, err
+	}
+	nomadHarness, err := c.Nomad.Client(e.Context(), e, c.Name+"-nomad-cli", consulAddr.Address.Host)
+	if err != nil {
+		_ = consulHarness.Stop()
 		return nil, err
 	}
 	return &NomadClient{
-		ConsulRunner: consulClient,
-		NomadRunner:  nomadClient,
+		ConsulHarness: consulHarness,
+		NomadHarness:  nomadHarness,
 	}, nil
 }
 
 func (c *NomadClient) Stop() {
-	_ = c.NomadRunner.Stop()
-	_ = c.ConsulRunner.Stop()
+	_ = c.NomadHarness.Stop()
+	_ = c.ConsulHarness.Stop()
 }
 
 func (c *NomadClient) Wait() error {
 	var g errgroup.Group
-	g.Go(c.NomadRunner.Wait)
-	g.Go(c.ConsulRunner.Wait)
+	g.Go(c.NomadHarness.Wait)
+	g.Go(c.ConsulHarness.Wait)
 	return g.Wait()
 }

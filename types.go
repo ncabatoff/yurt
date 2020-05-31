@@ -2,6 +2,7 @@ package yurt
 
 import (
 	"context"
+	"fmt"
 	"github.com/hashicorp/go-sockaddr"
 	"github.com/ncabatoff/yurt/pki"
 )
@@ -28,9 +29,7 @@ type Node struct {
 	Name      string
 	FirstPort int
 	StaticIP  string
-	WorkDir   string
-	// TLS cert (optional)
-	TLS *pki.TLSConfigPEM
+	TLS       *pki.TLSConfigPEM
 }
 
 /*
@@ -50,4 +49,52 @@ func (n Node) Address(firstPortOffset int) string {
 type NetworkConfig struct {
 	Network       sockaddr.SockAddr
 	DockerNetName string
+}
+
+type PortNetworkType int
+
+const TCPOnly PortNetworkType = 0
+const UDPOnly PortNetworkType = 1
+const TCPAndUDP PortNetworkType = 2
+
+type Port struct {
+	Number int
+	Type   PortNetworkType
+}
+
+type Ports struct {
+	// ByName is a map from port name (e.g. "http", "rpc") to port.
+	ByName map[string]Port
+	// NameOrder specifies the order to assign ports sequentially
+	NameOrder []string
+}
+
+func (p Port) AsList() []string {
+	var ret []string
+	if p.Type == TCPOnly || p.Type == TCPAndUDP {
+		ret = append(ret, fmt.Sprintf("%d/tcp", p.Number))
+	}
+	if p.Type == UDPOnly || p.Type == TCPAndUDP {
+		ret = append(ret, fmt.Sprintf("%d/udp", p.Number))
+	}
+	return ret
+}
+
+func (p Ports) Sequential(firstPort int) Ports {
+	for _, name := range p.NameOrder {
+		p.ByName[name] = Port{
+			Number: firstPort,
+			Type:   p.ByName[name].Type,
+		}
+		firstPort++
+	}
+	return p
+}
+
+func (p Ports) AsList() []string {
+	var ret []string
+	for _, name := range p.NameOrder {
+		ret = append(ret, p.ByName[name].AsList()...)
+	}
+	return ret
 }

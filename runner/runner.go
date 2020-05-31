@@ -14,6 +14,7 @@ import (
 )
 
 type (
+
 	// Config is the common config shared by all runners, though not all
 	// members may be used.  For example, a stateless service may have no DataDir.
 	Config struct {
@@ -29,21 +30,14 @@ type (
 		// NodeName is the name for this instance of the process.  This may or
 		// may not be an addressable name, depending on NetworkConfig.
 		NodeName string
-		// APIPort is the port used to reach the API provided by the node, if any
-		APIPort int
-		// TLS is used to configure TLS.  CA is required for any TLS connection,
-		// the other fields are only needed if client TLS is used.
-		TLS   pki.TLSConfigPEM
-		Name  string
-		Ports []string
+		TLS      pki.TLSConfigPEM
+		Ports    yurt.Ports
 	}
 
 	// Command describes how to run and interact with a process that starts
 	// a service.
 	Command interface {
-		// Config describes the directories containing process outputs and the
-		// networking details used to connect to its API.
-		Config() Config
+		Name() string
 		// Args are the command-line arguments to launch the process with.
 		Args() []string
 		// Env is the key=value settings to put in the environment.
@@ -51,20 +45,9 @@ type (
 		// Files are a map from base file name to file contents.  These inputs
 		// must be written to the ConfigDir before launch.
 		Files() map[string]string
-		// WithDirs returns a new Command with alternate config, data, and log dirs.
-		WithDirs(config, data, log string) Command
-		WithPorts(firstPort int) Command
-		WithNetwork(config yurt.NetworkConfig) Command
-		WithName(name string) Command
-	}
-
-	// Runner is the basic interface used for launching processes.
-	Runner interface {
-		// Start launches a process and returns the IP or hostname it runs on.
-		Command() Command
-		Start(ctx context.Context) (string, error)
-		Wait() error
-		Stop() error
+		// WithConfig returns a new Command with alternate config
+		Config() Config
+		WithConfig(Config) Command
 	}
 
 	// APIConfig contains enough information to create a connection to a service:
@@ -74,10 +57,15 @@ type (
 		CAFile  string
 	}
 
-	// APIRunner is a Runner that creates a process with an API.
-	APIRunner interface {
-		Runner
-		APIConfig() (*APIConfig, error)
+	Harness interface {
+		// Endpoint returns the config for the named service.  If local is true,
+		// the config is relative to the caller, otherwise it is given in terms
+		// of the service nodes themselves.  These may be equivalent depending
+		// on the execution model, i.e. whether port forwarding is being used
+		// to bridge the local and execution networks.
+		Endpoint(name string, local bool) (*APIConfig, error)
+		Stop() error
+		Wait() error
 	}
 
 	// LeaderAPI describes a distributed consensus API of many nodes with a
@@ -86,17 +74,10 @@ type (
 		Leader() (string, error)
 		Peers() ([]string, error)
 	}
-
-	// LogConfig is used by processes which can do self-log-rotation.
-	LogConfig struct {
-		LogDir            string
-		LogRotateBytes    int
-		LogRotateMaxFiles int
-	}
 )
 
-func ConsulRunnerToAPI(r ConsulRunner) (*consulapi.Client, error) {
-	apicfg, err := r.APIConfig()
+func ConsulRunnerToAPI(r Harness) (*consulapi.Client, error) {
+	apicfg, err := r.Endpoint("http", true)
 	if err != nil {
 		return nil, err
 	}
@@ -110,8 +91,8 @@ func ConsulAPIConfig(a *APIConfig) *consulapi.Config {
 	return cfg
 }
 
-func NomadRunnerToAPI(r NomadRunner) (*nomadapi.Client, error) {
-	apicfg, err := r.APIConfig()
+func NomadRunnerToAPI(r Harness) (*nomadapi.Client, error) {
+	apicfg, err := r.Endpoint("http", true)
 	if err != nil {
 		return nil, err
 	}
@@ -169,10 +150,10 @@ func LeaderAPIsHealthy(ctx context.Context, apis []LeaderAPI, expectedPeers []st
 	return err
 }
 
-func ConsulLeaderAPIs(runners []ConsulRunner) ([]LeaderAPI, error) {
+func ConsulLeaderAPIs(servers []Harness) ([]LeaderAPI, error) {
 	var ret []LeaderAPI
-	for _, runner := range runners {
-		apicfg, err := runner.APIConfig()
+	for _, server := range servers {
+		apicfg, err := server.Endpoint("http", true)
 		if err != nil {
 			return nil, err
 		}
@@ -185,10 +166,10 @@ func ConsulLeaderAPIs(runners []ConsulRunner) ([]LeaderAPI, error) {
 	return ret, nil
 }
 
-func NomadLeaderAPIs(runners []NomadRunner) ([]LeaderAPI, error) {
+func NomadLeaderAPIs(servers []Harness) ([]LeaderAPI, error) {
 	var ret []LeaderAPI
-	for _, runner := range runners {
-		apicfg, err := runner.APIConfig()
+	for _, server := range servers {
+		apicfg, err := server.Endpoint("http", true)
 		if err != nil {
 			return nil, err
 		}
@@ -201,16 +182,16 @@ func NomadLeaderAPIs(runners []NomadRunner) ([]LeaderAPI, error) {
 	return ret, nil
 }
 
-func ConsulRunnersHealthy(ctx context.Context, runners []ConsulRunner, expectedPeers []string) error {
-	apis, err := ConsulLeaderAPIs(runners)
+func ConsulRunnersHealthy(ctx context.Context, servers []Harness, expectedPeers []string) error {
+	apis, err := ConsulLeaderAPIs(servers)
 	if err != nil {
 		return err
 	}
 	return LeaderAPIsHealthy(ctx, apis, expectedPeers)
 }
 
-func NomadRunnersHealthy(ctx context.Context, runners []NomadRunner, expectedPeers []string) error {
-	apis, err := NomadLeaderAPIs(runners)
+func NomadRunnersHealthy(ctx context.Context, servers []Harness, expectedPeers []string) error {
+	apis, err := NomadLeaderAPIs(servers)
 	if err != nil {
 		return err
 	}

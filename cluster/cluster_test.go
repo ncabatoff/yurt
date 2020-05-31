@@ -17,28 +17,19 @@ import (
 
 func TestConsulExecCluster(t *testing.T) {
 	t.Parallel()
-	e, cleanup := runenv.NewExecTestEnv(t, 30*time.Second)
+	e, cleanup := runenv.NewExecTestEnv(t, 20*time.Second)
 	defer cleanup()
-
-	//ca, err := pki.NewCertificateAuthority(Vault.Cli)
-	//if err != nil {
-	//	t.Fatal(err)
-	//}
-	//cm := &ConsulCertificateMaker{ca: ca, ttl: "30m"}
-
-	cluster, err := NewConsulCluster(e.Context(), e, t.Name(), 3)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cluster.Stop()
-	e.Go(cluster.Wait)
+	testConsulCluster(t, e)
 }
 
 func TestConsulDockerCluster(t *testing.T) {
 	t.Parallel()
-	e, cleanup := runenv.NewDockerTestEnv(t, 30*time.Second)
+	e, cleanup := runenv.NewDockerTestEnv(t, 20*time.Second)
 	defer cleanup()
+	testConsulCluster(t, e)
+}
 
+func testConsulCluster(t *testing.T, e runenv.Env) {
 	//ca, err := pki.NewCertificateAuthority(Vault.Cli)
 	//if err != nil {
 	//	t.Fatal(err)
@@ -52,9 +43,9 @@ func TestConsulDockerCluster(t *testing.T) {
 	defer cluster.Stop()
 	e.Go(cluster.Wait)
 
-	client, _, err := cluster.Client(e.Context(), e, t.Name()+"-consul-cli")
+	client, err := cluster.Client(e.Context(), e, t.Name()+"-consul-cli")
 	e.Go(client.Wait)
-	if err := runner.ConsulRunnersHealthy(e.Context(), []runner.ConsulRunner{client}, cluster.peerAddrs); err != nil {
+	if err := runner.ConsulRunnersHealthy(e.Context(), []runner.Harness{client}, cluster.peerAddrs); err != nil {
 		t.Fatal(err)
 	}
 }

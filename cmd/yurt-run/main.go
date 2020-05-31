@@ -5,6 +5,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/ncabatoff/yurt/consul"
+	"github.com/ncabatoff/yurt/nomad"
 	"io/ioutil"
 	"log"
 	"os"
@@ -131,8 +133,9 @@ func main() {
 		log.Fatalf("error creating env: %v", err)
 	}
 
-	runConsul(ctx, e, yc)
-	runNomad(ctx, e, yc)
+	// TODO should we handle restarts, or rely on OS?
+	e.Go(runConsul(ctx, e, yc).Wait)
+	e.Go(runNomad(ctx, e, yc).Wait)
 
 	if err := e.Wait(); err != nil {
 		log.Fatal(err)
@@ -201,28 +204,14 @@ func (c *yurtConfig) setupTLS(vaultAddr, myIP string) error {
 	return nil
 }
 
-func runConsul(ctx context.Context, e runenv.Env, yc *yurtConfig) runner.ConsulRunner {
+func runConsul(ctx context.Context, e runenv.Env, yc *yurtConfig) runner.Harness {
 	myName, err := os.Hostname()
 	if err != nil {
 		log.Fatalf("error getting hostname: %v", err)
 	}
 
-	var consulCommand runner.ConsulCommand
-	{
-		baseConfig := runner.ConsulConfig{
-			NetworkConfig: yurt.NetworkConfig{Network: yc.network},
-			JoinAddrs:     yc.ConsulServerIPs,
-			Ports:         runner.DefConsulPorts(),
-			//TLS:           pki.TLSConfigPEM{},
-		}
-
-		if yc.IsConsulServer() {
-			consulCommand = runner.ConsulServerConfig{ConsulConfig: baseConfig}
-		} else {
-			consulCommand = baseConfig
-		}
-	}
-	r, _, err := e.Run(ctx, consulCommand, yurt.Node{
+	command := consul.NewConfig(yc.IsConsulServer(), yc.ConsulServerIPs)
+	r, err := e.Run(ctx, command, yurt.Node{
 		Name: myName,
 	})
 	if err != nil {
@@ -232,31 +221,18 @@ func runConsul(ctx context.Context, e runenv.Env, yc *yurtConfig) runner.ConsulR
 	return r
 }
 
-func runNomad(ctx context.Context, e runenv.Env, yc *yurtConfig) runner.NomadRunner {
+func runNomad(ctx context.Context, e runenv.Env, yc *yurtConfig) runner.Harness {
 	myName, err := os.Hostname()
 	if err != nil {
 		log.Fatalf("error getting hostname: %v", err)
 	}
 
-	var nomadCommand runner.NomadCommand
-	{
-		baseConfig := runner.NomadConfig{
-			NetworkConfig: yurt.NetworkConfig{Network: yc.network},
-			Ports:         runner.DefNomadPorts(),
-			//TLS:           pki.TLSConfigPEM{},
-		}
-
-		if yc.IsConsulServer() {
-			nomadCommand = runner.NomadServerConfig{
-				NomadConfig:     baseConfig,
-				BootstrapExpect: 3,
-			}
-		} else {
-			nomadCommand = runner.NomadClientConfig{NomadConfig: baseConfig}
-		}
+	expect := 0
+	if yc.IsConsulServer() {
+		expect = len(yc.ConsulServerIPs)
 	}
-
-	r, _, err := e.Run(ctx, nomadCommand, yurt.Node{
+	command := nomad.NewConfig(expect, fmt.Sprintf("127.0.0.1:%d", consul.DefPorts().HTTP))
+	r, err := e.Run(ctx, command, yurt.Node{
 		Name: myName,
 	})
 	if err != nil {
