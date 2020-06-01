@@ -232,3 +232,45 @@ EOH
   }
 }
 `
+
+func TestVaultExecCluster(t *testing.T) {
+	e, cleanup := runenv.NewExecTestEnv(t, 30*time.Second)
+	defer cleanup()
+	testVaultCluster(t, e)
+}
+
+func testVaultCluster(t *testing.T, e runenv.Env) {
+	//ca, err := pki.NewCertificateAuthority(Vault.Cli)
+	//if err != nil {
+	//	t.Fatal(err)
+	//}
+	//cm := &ConsulCertificateMaker{ca: ca, ttl: "30m"}
+
+	cluster, err := NewVaultCluster(e.Context(), e, t.Name(), 3, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cluster.Stop()
+	e.Go(cluster.Wait)
+}
+
+func TestConsulVaultExecCluster(t *testing.T) {
+	e, cleanup := runenv.NewExecTestEnv(t, 30*time.Second)
+	defer cleanup()
+	testConsulVaultCluster(t, e)
+}
+
+func testConsulVaultCluster(t *testing.T, e runenv.Env) {
+	//ca, err := pki.NewCertificateAuthority(Vault.Cli)
+	//if err != nil {
+	//	t.Fatal(err)
+	//}
+	//cm := &ConsulCertificateMaker{ca: ca, ttl: "30m"}
+
+	cluster, err := NewConsulVaultCluster(e.Context(), e, t.Name(), 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cluster.Stop()
+	e.Go(cluster.Wait)
+}

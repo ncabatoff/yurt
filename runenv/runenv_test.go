@@ -1,12 +1,14 @@
 package runenv
 
 import (
-	"github.com/ncabatoff/yurt/consul"
-	"github.com/ncabatoff/yurt/nomad"
+	"context"
 	"testing"
 	"time"
 
+	"github.com/ncabatoff/yurt/consul"
+	"github.com/ncabatoff/yurt/nomad"
 	"github.com/ncabatoff/yurt/runner"
+	"github.com/ncabatoff/yurt/vault"
 )
 
 func TestConsulExec(t *testing.T) {
@@ -60,7 +62,7 @@ func runConsul(t *testing.T, e Env, server runner.Harness) runner.Harness {
 	command := consul.NewConfig(false, []string{serfAddr.Address.Host})
 	expectedPeerAddrs := []string{serverAddr.Address.Host}
 
-	h, err := e.Run(e.Context(), command, e.AllocNode("consul-cli", consul.DefPorts().RunnerPorts()))
+	h, err := e.Run(e.Context(), command, e.AllocNode(t.Name()+"consul-cli", consul.DefPorts().RunnerPorts()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,4 +126,60 @@ func TestNomadDocker(t *testing.T) {
 	nomad := runNomad(t, e, consul)
 	e.Go(consul.Wait)
 	e.Go(nomad.Wait)
+}
+
+func TestVaultExec(t *testing.T) {
+	e, cleanup := NewExecTestEnv(t, 15*time.Second)
+	defer cleanup()
+
+	e.Go(runVaultServer(t, e, "").Wait)
+}
+
+func runVaultServer(t *testing.T, e Env, consulAddr string) runner.Harness {
+	node := e.AllocNode(t.Name()+"-vault", vault.DefPorts().RunnerPorts())
+	apiAddr, err := node.Address(vault.PortNames.HTTP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var command runner.Command
+	if consulAddr != "" {
+		command = vault.NewConsulConfig(consulAddr, "vault")
+	} else {
+		command = vault.NewRaftConfig([]string{apiAddr})
+	}
+
+	h, err := e.Run(e.Context(), command, node)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cli, err := vault.HarnessToAPI(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(e.Context(), 10*time.Second)
+	defer cancel()
+
+	_, err = vault.Status(ctx, cli)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var unsealKeys []string
+	//if !sealStatus.Initialized {
+	_, unsealKeys, err = vault.Initialize(ctx, cli)
+	if err != nil {
+		t.Fatal(err)
+	}
+	//}
+
+	err = vault.Unseal(ctx, cli, unsealKeys[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := vault.LeadersHealthy(e.Context(), []runner.Harness{h}); err != nil {
+		t.Fatal(err)
+	}
+	return h
 }

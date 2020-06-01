@@ -203,8 +203,8 @@ func apiConfigToClient(a *runner.APIConfig) (*consulapi.Client, error) {
 	return consulapi.NewClient(cfg)
 }
 
-func consulLeaderAPIs(servers []runner.Harness) ([]runner.LeaderAPI, error) {
-	var ret []runner.LeaderAPI
+func consulLeaderAPIs(servers []runner.Harness) ([]runner.LeaderPeersAPI, error) {
+	var ret []runner.LeaderPeersAPI
 	for _, server := range servers {
 		api, err := HarnessToAPI(server)
 		if err != nil {
@@ -220,5 +220,5 @@ func LeadersHealthy(ctx context.Context, servers []runner.Harness, expectedPeers
 	if err != nil {
 		return err
 	}
-	return runner.LeaderAPIsHealthy(ctx, apis, expectedPeers)
+	return runner.LeaderPeerAPIsHealthy(ctx, apis, expectedPeers)
 }

@@ -66,15 +66,25 @@ type (
 		Wait() error
 	}
 
-	// LeaderAPI describes a distributed consensus API of many nodes with a
-	// single leader under quorum.
+	Status interface {
+		// Status() returns the service-dependent status result, or an error
+		// if the service isn't even able to do that
+		Status() (interface{}, error)
+	}
+
 	LeaderAPI interface {
+		Leader() (string, error)
+	}
+
+	// LeaderPeersAPI describes a distributed consensus API of many nodes with a
+	// single leader under quorum.
+	LeaderPeersAPI interface {
 		Leader() (string, error)
 		Peers() ([]string, error)
 	}
 )
 
-func LeaderAPIsHealthyNow(apis []LeaderAPI, expectedPeers []string) error {
+func LeaderPeerAPIsHealthyNow(apis []LeaderPeersAPI, expectedPeers []string) error {
 	var errs []error
 	var peers []string
 	var leaders = make(map[string]struct{})
@@ -103,17 +113,53 @@ func LeaderAPIsHealthyNow(apis []LeaderAPI, expectedPeers []string) error {
 		errs, leaders, peers)
 }
 
-func LeaderAPIsHealthy(ctx context.Context, apis []LeaderAPI, expectedPeers []string) error {
+func LeaderPeerAPIsHealthy(ctx context.Context, apis []LeaderPeersAPI, expectedPeers []string) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
 	var err error
 	for ctx.Err() == nil {
-		err = LeaderAPIsHealthyNow(apis, expectedPeers)
+		err = LeaderPeerAPIsHealthyNow(apis, expectedPeers)
 		if err == nil {
 			return nil
 		}
 		time.Sleep(1000 * time.Millisecond)
 	}
 	return err
+}
+
+func LeaderAPIsHealthy(ctx context.Context, apis []LeaderAPI) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	var err error
+	for ctx.Err() == nil {
+		err = LeaderAPIsHealthyNow(apis)
+		if err == nil {
+			return nil
+		}
+		time.Sleep(1000 * time.Millisecond)
+	}
+	return err
+}
+
+func LeaderAPIsHealthyNow(apis []LeaderAPI) error {
+	var errs []error
+	var leaders = make(map[string]struct{})
+
+	for _, api := range apis {
+		leader, err := api.Leader()
+		if err != nil {
+			errs = append(errs, err)
+			break
+		}
+		if leader != "" {
+			leaders[leader] = struct{}{}
+		}
+	}
+	if len(errs) == 0 && len(leaders) == 1 {
+		return nil
+	}
+
+	return fmt.Errorf("expected no errs, 1 leader got %v, %v", errs, leaders)
 }

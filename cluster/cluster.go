@@ -3,13 +3,15 @@ package cluster
 import (
 	"context"
 	"fmt"
-	"github.com/ncabatoff/yurt/consul"
-	"github.com/ncabatoff/yurt/nomad"
-	"github.com/ncabatoff/yurt/runenv"
+	"time"
 
 	"github.com/ncabatoff/yurt"
+	"github.com/ncabatoff/yurt/consul"
+	"github.com/ncabatoff/yurt/nomad"
 	"github.com/ncabatoff/yurt/pki"
+	"github.com/ncabatoff/yurt/runenv"
 	"github.com/ncabatoff/yurt/runner"
+	"github.com/ncabatoff/yurt/vault"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -222,4 +224,195 @@ func (c *NomadClient) Wait() error {
 	g.Go(c.NomadHarness.Wait)
 	g.Go(c.ConsulHarness.Wait)
 	return g.Wait()
+}
+
+func NewVaultCluster(ctx context.Context, e runenv.Env, name string, nodeCount int, parallelStart bool, consulAddrs []string) (c *VaultCluster, err error) {
+	cluster := VaultCluster{
+		group:       &errgroup.Group{},
+		consulAddrs: consulAddrs,
+	}
+	defer func() {
+		if err != nil {
+			cluster.Stop()
+		}
+	}()
+
+	nodes := make([]yurt.Node, nodeCount)
+	for i := 0; i < nodeCount; i++ {
+		nodes[i] = e.AllocNode(name+"-vault-srv", vault.DefPorts().RunnerPorts())
+		joinAddr, err := nodes[i].Address(vault.PortNames.HTTP)
+		if err != nil {
+			return nil, err
+		}
+		cluster.joinAddrs = append(cluster.joinAddrs, joinAddr)
+	}
+
+	if !parallelStart {
+		err = cluster.addNode(ctx, e, nodes[0], "")
+		if err != nil {
+			return nil, err
+		}
+
+		cli, err := vault.HarnessToAPI(cluster.servers[0])
+		if err != nil {
+			return nil, err
+		}
+
+		_, err = vault.Status(ctx, cli)
+		if err != nil {
+			return nil, err
+		}
+
+		cluster.rootToken, cluster.unsealKeys, err = vault.Initialize(ctx, cli)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	for i, node := range nodes {
+		if i > 0 || parallelStart {
+			var consulAddr string
+			if i < len(consulAddrs) {
+				consulAddr = consulAddrs[i]
+			}
+			if err := cluster.addNode(ctx, e, node, consulAddr); err != nil {
+				return nil, err
+			}
+		}
+		cli, err := vault.HarnessToAPI(cluster.servers[i])
+		if err != nil {
+			return nil, err
+		}
+
+		_, err = vault.Status(ctx, cli)
+		if err != nil {
+			return nil, err
+		}
+
+		if i == 0 && parallelStart {
+			cluster.rootToken, cluster.unsealKeys, err = vault.Initialize(ctx, cli)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		for ctx.Err() == nil {
+			// TODO support multiple keys
+			err = vault.Unseal(ctx, cli, cluster.unsealKeys[0])
+			if err == nil {
+				break
+			}
+			if i == 0 {
+				return nil, err
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("timeout waiting for standby node to unseal successfully, last error: %v", err)
+		}
+		if err := vault.LeadersHealthy(ctx, []runner.Harness{cluster.servers[i]}); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := vault.LeadersHealthy(ctx, cluster.servers); err != nil {
+		return nil, err
+	}
+
+	return &cluster, nil
+}
+
+type VaultCluster struct {
+	servers     []runner.Harness
+	group       *errgroup.Group
+	joinAddrs   []string
+	consulAddrs []string
+	rootToken   string
+	unsealKeys  []string
+}
+
+func (c *VaultCluster) addNode(ctx context.Context, e runenv.Env, node yurt.Node, consulAddr string) error {
+	var cfg vault.VaultConfig
+	if consulAddr != "" {
+		cfg = vault.NewConsulConfig(consulAddr, "vault")
+	} else {
+		cfg = vault.NewRaftConfig(c.joinAddrs)
+	}
+
+	h, err := e.Run(ctx, cfg, node)
+	if err != nil {
+		return err
+	}
+	c.servers = append(c.servers, h)
+	c.group.Go(h.Wait)
+	return nil
+}
+
+func (c *VaultCluster) Wait() error {
+	return c.group.Wait()
+}
+
+func (c *VaultCluster) Stop() {
+	for _, s := range c.servers {
+		_ = s.Stop()
+	}
+}
+
+type ConsulVaultCluster struct {
+	Name         string
+	Consul       *ConsulCluster
+	Vault        *VaultCluster
+	consulAgents []runner.Harness
+	group        *errgroup.Group
+}
+
+func NewConsulVaultCluster(ctx context.Context, e runenv.Env, name string, nodeCount int) (*ConsulVaultCluster, error) {
+	consulCluster, err := NewConsulCluster(ctx, e, name, nodeCount)
+	if err != nil {
+		return nil, err
+	}
+	e.Go(consulCluster.Wait)
+
+	cluster := &ConsulVaultCluster{
+		Name:   name,
+		Consul: consulCluster,
+		group:  &errgroup.Group{},
+	}
+
+	var consulAddrs []string
+	for i := 0; i < nodeCount; i++ {
+		consulHarness, err := consulCluster.Client(ctx, e, name+"-consul-cli")
+		if err != nil {
+			return nil, err
+		}
+		cluster.consulAgents = append(cluster.consulAgents, consulHarness)
+		cluster.group.Go(consulHarness.Wait)
+
+		consulAddr, err := consulHarness.Endpoint("http", false)
+		if err != nil {
+			cluster.Stop()
+			return nil, err
+		}
+		consulAddrs = append(consulAddrs, consulAddr.Address.Host)
+	}
+
+	cluster.Vault, err = NewVaultCluster(ctx, e, name, nodeCount, true, consulAddrs)
+	if err != nil {
+		return nil, err
+	}
+	e.Go(cluster.Vault.Wait)
+
+	return cluster, nil
+}
+
+func (c *ConsulVaultCluster) Wait() error {
+	var g errgroup.Group
+	g.Go(c.Vault.Wait)
+	g.Go(c.Consul.Wait)
+	return g.Wait()
+}
+
+func (c *ConsulVaultCluster) Stop() {
+	c.Vault.Stop()
+	c.Consul.Stop()
 }
