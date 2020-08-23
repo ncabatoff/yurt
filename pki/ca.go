@@ -3,14 +3,10 @@ package pki
 import (
 	"context"
 	"fmt"
-	"github.com/ncabatoff/yurt/util"
-	"os/exec"
-	"strings"
-	"time"
-
 	"github.com/hashicorp/go-uuid"
 	vaultapi "github.com/hashicorp/vault/api"
-	"github.com/ncabatoff/yurt/binaries"
+	"github.com/ncabatoff/yurt/util"
+	"strings"
 )
 
 type CertificateAuthority struct {
@@ -26,6 +22,8 @@ func NewExternalCertificateAuthority(vaultAddr, vaultToken string) (*Certificate
 	return NewCertificateAuthority(cli)
 }
 
+// NewCertificateAuthority mounts PKI secrets engines using the client, then
+// returns a CertificateAuthority which will use them to generate certs.
 func NewCertificateAuthority(cli *vaultapi.Client) (*CertificateAuthority, error) {
 	u, err := uuid.GenerateUUID()
 	if err != nil {
@@ -44,77 +42,6 @@ func NewCertificateAuthority(cli *vaultapi.Client) (*CertificateAuthority, error
 		path: u,
 		cli:  cli,
 	}, nil
-}
-
-type VaultRunner struct {
-	WorkDir string
-	Port    int
-	cmd     *exec.Cmd
-	ctx     context.Context
-	cancel  func()
-	Cli     *vaultapi.Client
-}
-
-func NewVaultRunner(workDir string, port int) (*VaultRunner, error) {
-	return &VaultRunner{WorkDir: workDir, Port: port}, nil
-}
-
-// Start launches a Vault instance on the configured port, which may write files
-// to workDir.  It will be killed when the context is cancelled.
-func (v *VaultRunner) Start(ctx context.Context) (err error) {
-	if v.cmd != nil {
-		return fmt.Errorf("already running")
-	}
-
-	binPath, err := binaries.Default.Get("vault")
-	if err != nil {
-		return err
-	}
-	v.ctx, v.cancel = context.WithCancel(ctx)
-	rootToken := "devroot"
-	cmd := exec.CommandContext(v.ctx, binPath, "server", "-dev",
-		"-dev-listen-address", fmt.Sprintf("0.0.0.0:%d", v.Port),
-		"-dev-root-token-id", rootToken)
-	// TODO send log output to file?
-	//cmd.Stdout = util.NewOutputWriter("vault-ca", os.Stdout)
-	//cmd.Stderr = util.NewOutputWriter("vault-ca", os.Stderr)
-
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	v.cmd = cmd
-	defer func() {
-		if err != nil {
-			v.cancel()
-		}
-	}()
-
-	v.Cli, err = util.MakeVaultClient(fmt.Sprintf("http://localhost:%d", v.Port), rootToken)
-	if err != nil {
-		return err
-	}
-
-	if err := waitVaultUnsealed(ctx, v.Cli); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (v *VaultRunner) Stop() {
-	v.cancel()
-}
-
-func waitVaultUnsealed(ctx context.Context, cli *vaultapi.Client) (err error) {
-	for ctx.Err() == nil {
-		var resp *vaultapi.SealStatusResponse
-		resp, err = cli.Sys().SealStatus()
-		if resp != nil && !resp.Sealed {
-			return nil
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	return fmt.Errorf("unseal failed, last error: %v", err)
 }
 
 func createRootCA(cli *vaultapi.Client, pfx string) error {

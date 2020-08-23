@@ -21,7 +21,7 @@ func main() {
 		flagCIDR      = flag.String("cidr", "", "cidr to allocate to cluster, only for mode=docker")
 		flagNodes     = flag.Int("nodes", 3, "number of server nodes")
 		//flagOpen        = flag.Bool("open", true, "open browser to Consul and Nomad UIs")
-		//flagTLS         = flag.Bool("tls", false, "generate certs and enable TLS authentication")
+		flagTLS     = flag.Bool("tls", false, "generate certs and enable TLS authentication")
 		flagWorkDir = flag.String("workdir", "/tmp/yurt", "directory to store files")
 	)
 	flag.Parse()
@@ -46,19 +46,23 @@ func main() {
 		log.Fatalf("invalid mode %q", *flagMode)
 	}
 
-	//var ca *pki.CertificateAuthority
-	//if *flagTLS {
-	//	ca, err = vaultCA(ctx, datadir, flagFirstPort)
-	//}
+	var ca *pki.CertificateAuthority
+	var err error
+	if *flagTLS {
+		ca, err = vaultCA(e)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
 
-	cnc, err := cluster.NewConsulNomadCluster(e.Context(), e, "cluster1", *flagNodes)
+	cnc, err := cluster.NewConsulNomadCluster(e.Context(), e, ca, "cluster1", *flagNodes)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer cnc.Stop()
 	e.Go(cnc.Wait)
 
-	nomadClient, err := cnc.NomadClient(e)
+	nomadClient, err := cnc.NomadClient(e, ca)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -71,15 +75,16 @@ func main() {
 	<-sigchan
 }
 
-func vaultCA(ctx context.Context, workDir string, firstPort *int) (*pki.CertificateAuthority, error) {
-	v, err := pki.NewVaultRunner(workDir, *firstPort)
-	*firstPort++
+func vaultCA(e runenv.Env) (*pki.CertificateAuthority, error) {
+	cluster, err := cluster.NewVaultCluster(e.Context(), e, nil, "yurt-vault-pki", 1, false, nil)
 	if err != nil {
 		return nil, err
 	}
-	err = v.Start(ctx)
+	clients, err := cluster.Clients()
 	if err != nil {
 		return nil, err
 	}
-	return pki.NewCertificateAuthority(v.Cli)
+	e.Go(cluster.Wait)
+
+	return pki.NewCertificateAuthority(clients[0])
 }

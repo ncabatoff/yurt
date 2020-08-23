@@ -3,6 +3,8 @@ package consul
 import (
 	"context"
 	"fmt"
+	"github.com/ncabatoff/yurt/pki"
+	"github.com/pkg/errors"
 	"log"
 
 	consulapi "github.com/hashicorp/consul/api"
@@ -79,12 +81,17 @@ func (cc ConsulConfig) Name() string {
 	return "consul"
 }
 
-func NewConfig(server bool, joinAddrs []string) ConsulConfig {
+func NewConfig(server bool, joinAddrs []string, tls *pki.TLSConfigPEM) ConsulConfig {
+	var t pki.TLSConfigPEM
+	if tls != nil {
+		t = *tls
+	}
 	return ConsulConfig{
 		Server:    server,
 		JoinAddrs: joinAddrs,
 		Common: runner.Config{
 			Ports: DefPorts().RunnerPorts(),
+			TLS:   t,
 		},
 	}
 }
@@ -208,7 +215,7 @@ func consulLeaderAPIs(servers []runner.Harness) ([]runner.LeaderPeersAPI, error)
 	for _, server := range servers {
 		api, err := HarnessToAPI(server)
 		if err != nil {
-			return nil, err
+			return nil, errors.Wrap(err, "cannot create Consul client from harness")
 		}
 		ret = append(ret, api.Status())
 	}
@@ -218,7 +225,7 @@ func consulLeaderAPIs(servers []runner.Harness) ([]runner.LeaderPeersAPI, error)
 func LeadersHealthy(ctx context.Context, servers []runner.Harness, expectedPeers []string) error {
 	apis, err := consulLeaderAPIs(servers)
 	if err != nil {
-		return err
+		return errors.Wrap(err, "error getting Consul Leader APIs")
 	}
 	return runner.LeaderPeerAPIsHealthy(ctx, apis, expectedPeers)
 }

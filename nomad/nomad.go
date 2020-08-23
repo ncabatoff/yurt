@@ -8,6 +8,7 @@ import (
 	nomadapi "github.com/hashicorp/nomad/api"
 	"github.com/hashicorp/vault/sdk/helper/jsonutil"
 	"github.com/ncabatoff/yurt"
+	"github.com/ncabatoff/yurt/pki"
 	"github.com/ncabatoff/yurt/runner"
 )
 
@@ -59,12 +60,17 @@ type NomadConfig struct {
 	ConsulAddr string
 }
 
-func NewConfig(bootstrapExpect int, consulAddr string) NomadConfig {
+func NewConfig(bootstrapExpect int, consulAddr string, tls *pki.TLSConfigPEM) NomadConfig {
+	var t pki.TLSConfigPEM
+	if tls != nil {
+		t = *tls
+	}
 	return NomadConfig{
 		BootstrapExpect: bootstrapExpect,
 		ConsulAddr:      consulAddr,
 		Common: runner.Config{
 			Ports: DefPorts().RunnerPorts(),
+			TLS:   t,
 		},
 	}
 }

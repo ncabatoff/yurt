@@ -7,6 +7,7 @@ import (
 
 	vaultapi "github.com/hashicorp/vault/api"
 	"github.com/ncabatoff/yurt"
+	"github.com/ncabatoff/yurt/pki"
 	"github.com/ncabatoff/yurt/runner"
 )
 
@@ -66,21 +67,31 @@ func (vc VaultConfig) Name() string {
 	return "vault"
 }
 
-func NewRaftConfig(joinAddrs []string) VaultConfig {
+func NewRaftConfig(joinAddrs []string, tls *pki.TLSConfigPEM) VaultConfig {
+	var t pki.TLSConfigPEM
+	if tls != nil {
+		t = *tls
+	}
 	return VaultConfig{
 		JoinAddrs: joinAddrs,
 		Common: runner.Config{
 			Ports: DefPorts().RunnerPorts(),
+			TLS:   t,
 		},
 	}
 }
 
-func NewConsulConfig(consulAddr, consulPath string) VaultConfig {
+func NewConsulConfig(consulAddr, consulPath string, tls *pki.TLSConfigPEM) VaultConfig {
+	var t pki.TLSConfigPEM
+	if tls != nil {
+		t = *tls
+	}
 	return VaultConfig{
 		ConsulAddr: consulAddr,
 		ConsulPath: consulPath,
 		Common: runner.Config{
 			Ports: DefPorts().RunnerPorts(),
+			TLS:   t,
 		},
 	}
 }
@@ -100,11 +111,17 @@ func (vc VaultConfig) Env() []string {
 
 func (vc VaultConfig) raftConfig() string {
 	var retryJoin string
+	scheme, ca := "http", ""
+	if len(vc.Common.TLS.Cert) > 0 {
+		scheme = "https"
+		ca = `leader_ca_cert_file = "ca.pem"`
+	}
 	for _, j := range vc.JoinAddrs {
 		retryJoin += fmt.Sprintf(`
   retry_join {
-    leader_api_addr = "http://%s"
-  }`, j)
+    leader_api_addr = "%s://%s"
+    %s
+  }`, scheme, j, ca)
 	}
 
 	return fmt.Sprintf(`
@@ -118,31 +135,61 @@ func (vc VaultConfig) raftConfig() string {
 }
 
 func (vc VaultConfig) consulConfig() string {
-	return fmt.Sprintf(`
-	storage "consul" {
-		address = "%s"
-		path = "%s"
+	var tls string
+	if vc.Common.TLS.Cert != "" {
+		tls = `
+    scheme = "https"
+    tls_ca_file = "ca.pem"
+    tls_cert_file = "vault.pem"
+    tls_key_file = "vault-key.pem"
+`
 	}
-	`, vc.ConsulAddr, vc.ConsulPath)
+
+	return fmt.Sprintf(`
+storage "consul" {
+    address = "%s"
+    path = "%s"
+%s
+}
+	`, vc.ConsulAddr, vc.ConsulPath, tls)
 }
 
 func (vc VaultConfig) Files() map[string]string {
 	listenerAddr := fmt.Sprintf("127.0.0.1:%d", vc.Common.Ports.ByName[PortNames.HTTP].Number)
 	apiAddr := fmt.Sprintf("http://127.0.0.1:%d", vc.Common.Ports.ByName[PortNames.HTTP].Number)
 	clusterAddr := fmt.Sprintf("http://127.0.0.1:%d", vc.Common.Ports.ByName[PortNames.Cluster].Number)
+	var tlsConfig string
+	files := map[string]string{}
+	if vc.Common.TLS.Cert != "" {
+		apiAddr = fmt.Sprintf("https://127.0.0.1:%d", vc.Common.Ports.ByName[PortNames.HTTP].Number)
+		clusterAddr = fmt.Sprintf("https://127.0.0.1:%d", vc.Common.Ports.ByName[PortNames.Cluster].Number)
+
+		files["vault.pem"] = vc.Common.TLS.Cert
+		tlsConfig += `  tls_cert_file = "vault.pem"
+`
+		files["vault-key.pem"] = vc.Common.TLS.PrivateKey
+		tlsConfig += `  tls_key_file = "vault-key.pem"
+`
+	}
+	if vc.Common.TLS.CA != "" {
+		files["ca.pem"] = vc.Common.TLS.CA
+		tlsConfig += `  tls_client_ca_file = "ca.pem"
+`
+	}
 	config := fmt.Sprintf(`
 disable_mlock = true
 api_addr = "%s"
 cluster_addr = "%s"
 listener "tcp" {
   address = "%s"
-  tls_disable = true
+  tls_disable = %v
+%s
 }
 telemetry {
   disable_hostname = true
   prometheus_retention_time = "10m"
 }
-`, apiAddr, clusterAddr, listenerAddr)
+`, apiAddr, clusterAddr, listenerAddr, vc.Common.TLS.Cert == "", tlsConfig)
 
 	if vc.ConsulAddr != "" {
 		config += vc.consulConfig()
@@ -150,9 +197,8 @@ telemetry {
 		config += vc.raftConfig()
 	}
 
-	return map[string]string{
-		"vault.hcl": config,
-	}
+	files["vault.hcl"] = config
+	return files
 }
 
 func HarnessToAPI(r runner.Harness) (*vaultapi.Client, error) {

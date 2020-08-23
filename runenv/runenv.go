@@ -120,6 +120,7 @@ func (e ExecEnv) Run(ctx context.Context, cmd runner.Command, node yurt.Node) (r
 		DataDir:   filepath.Join(e.WorkDir, node.Name, "data"),
 		LogDir:    filepath.Join(e.WorkDir, node.Name, "log"),
 		Ports:     node.Ports,
+		TLS:       cmd.Config().TLS,
 	})
 	if err != nil {
 		return nil, err
@@ -205,6 +206,7 @@ func (d *DockerEnv) Run(ctx context.Context, cmd runner.Command, node yurt.Node)
 		DataDir:       filepath.Join(d.WorkDir, node.Name, "data"),
 		LogDir:        filepath.Join(d.WorkDir, node.Name, "log"),
 		Ports:         node.Ports,
+		TLS:           cmd.Config().TLS,
 	})
 	if err != nil {
 		return nil, err

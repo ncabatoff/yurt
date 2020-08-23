@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	vaultapi "github.com/hashicorp/vault/api"
 	"github.com/ncabatoff/yurt"
 	"github.com/ncabatoff/yurt/consul"
 	"github.com/ncabatoff/yurt/nomad"
@@ -26,7 +27,9 @@ func (c ConsulCertificateMaker) MakeCertificate(ctx context.Context, hostname, i
 	return c.ca.ConsulServerTLS(ctx, ip, c.ttl)
 }
 
-func NewConsulCluster(ctx context.Context, e runenv.Env, name string, nodeCount int) (*ConsulCluster, error) {
+// NewConsulCluster creates a Consul cluster in the given env.  If ca is given,
+// it will be used to create certificates; otherwise, the cluster won't use TLS.
+func NewConsulCluster(ctx context.Context, e runenv.Env, ca *pki.CertificateAuthority, name string, nodeCount int) (*ConsulCluster, error) {
 	cluster := ConsulCluster{group: &errgroup.Group{}}
 	var nodes []yurt.Node
 	for i := 0; i < nodeCount; i++ {
@@ -47,7 +50,16 @@ func NewConsulCluster(ctx context.Context, e runenv.Env, name string, nodeCount 
 	}
 
 	for _, node := range nodes {
-		cfg := consul.NewConfig(true, cluster.joinAddrs)
+		var tls *pki.TLSConfigPEM
+		if ca != nil {
+			var err error
+			tls, err = ca.ConsulServerTLS(ctx, "", "1h")
+			if err != nil {
+				return nil, err
+			}
+			cluster.tls.CA = tls.CA
+		}
+		cfg := consul.NewConfig(true, cluster.joinAddrs, tls)
 		h, err := e.Run(ctx, cfg, node)
 		if err != nil {
 			return nil, err
@@ -68,10 +80,19 @@ type ConsulCluster struct {
 	group     *errgroup.Group
 	joinAddrs []string
 	peerAddrs []string
+	tls       pki.TLSConfigPEM
 }
 
-func (c *ConsulCluster) Client(ctx context.Context, e runenv.Env, name string) (runner.Harness, error) {
-	return e.Run(ctx, consul.NewConfig(false, c.joinAddrs), e.AllocNode(name, consul.DefPorts().RunnerPorts()))
+func (c *ConsulCluster) ClientAgent(ctx context.Context, e runenv.Env, ca *pki.CertificateAuthority, name string) (runner.Harness, error) {
+	var tls *pki.TLSConfigPEM
+	if ca != nil {
+		var err error
+		tls, err = ca.ConsulServerTLS(ctx, "", "1h")
+		if err != nil {
+			return nil, err
+		}
+	}
+	return e.Run(ctx, consul.NewConfig(false, c.joinAddrs, tls), e.AllocNode(name, consul.DefPorts().RunnerPorts()))
 }
 
 func (c *ConsulCluster) Wait() error {
@@ -84,7 +105,7 @@ func (c *ConsulCluster) Stop() {
 	}
 }
 
-func NewNomadCluster(ctx context.Context, e runenv.Env, name string, nodeCount int, consulCluster *ConsulCluster) (*NomadCluster, error) {
+func NewNomadCluster(ctx context.Context, e runenv.Env, ca *pki.CertificateAuthority, name string, nodeCount int, consulCluster *ConsulCluster) (*NomadCluster, error) {
 	cluster := NomadCluster{group: &errgroup.Group{}}
 	var nodes []yurt.Node
 	for i := 0; i < nodeCount; i++ {
@@ -95,7 +116,7 @@ func NewNomadCluster(ctx context.Context, e runenv.Env, name string, nodeCount i
 	}
 
 	for _, node := range nodes {
-		consulHarness, err := consulCluster.Client(ctx, e, name+"-consul-cli")
+		consulHarness, err := consulCluster.ClientAgent(ctx, e, ca, name+"-consul-cli")
 		if err != nil {
 			return nil, err
 		}
@@ -107,7 +128,16 @@ func NewNomadCluster(ctx context.Context, e runenv.Env, name string, nodeCount i
 			cluster.Stop()
 			return nil, err
 		}
-		cfg := nomad.NewConfig(nodeCount, consulAddr.Address.Host)
+
+		var tls *pki.TLSConfigPEM
+		if ca != nil {
+			var err error
+			tls, err = ca.NomadServerTLS(ctx, "", "1h")
+			if err != nil {
+				return nil, err
+			}
+		}
+		cfg := nomad.NewConfig(nodeCount, consulAddr.Address.Host, tls)
 		nomadHarness, err := e.Run(ctx, cfg, node)
 		if err != nil {
 			cluster.Stop()
@@ -145,10 +175,16 @@ func (c *NomadCluster) Stop() {
 	}
 }
 
-func (c *NomadCluster) Client(ctx context.Context, e runenv.Env, name, consulAddr string) (runner.Harness, error) {
-	return e.Run(ctx, nomad.NomadConfig{
-		ConsulAddr: consulAddr,
-	}, e.AllocNode(name, nomad.DefPorts().RunnerPorts()))
+func (c *NomadCluster) ClientAgent(ctx context.Context, e runenv.Env, ca *pki.CertificateAuthority, name, consulAddr string) (runner.Harness, error) {
+	var tls *pki.TLSConfigPEM
+	if ca != nil {
+		var err error
+		tls, err = ca.NomadServerTLS(ctx, "", "1h")
+		if err != nil {
+			return nil, err
+		}
+	}
+	return e.Run(ctx, nomad.NewConfig(0, consulAddr, tls), e.AllocNode(name, nomad.DefPorts().RunnerPorts()))
 }
 
 type ConsulNomadCluster struct {
@@ -157,14 +193,14 @@ type ConsulNomadCluster struct {
 	Nomad  *NomadCluster
 }
 
-func NewConsulNomadCluster(ctx context.Context, e runenv.Env, name string, nodeCount int) (*ConsulNomadCluster, error) {
-	consulCluster, err := NewConsulCluster(ctx, e, name, nodeCount)
+func NewConsulNomadCluster(ctx context.Context, e runenv.Env, ca *pki.CertificateAuthority, name string, nodeCount int) (*ConsulNomadCluster, error) {
+	consulCluster, err := NewConsulCluster(ctx, e, ca, name, nodeCount)
 	if err != nil {
 		return nil, err
 	}
 	e.Go(consulCluster.Wait)
 
-	nomadCluster, err := NewNomadCluster(ctx, e, name, nodeCount, consulCluster)
+	nomadCluster, err := NewNomadCluster(ctx, e, ca, name, nodeCount, consulCluster)
 	if err != nil {
 		return nil, err
 	}
@@ -194,8 +230,8 @@ type NomadClient struct {
 	NomadHarness  runner.Harness
 }
 
-func (c *ConsulNomadCluster) NomadClient(e runenv.Env) (*NomadClient, error) {
-	consulHarness, err := c.Consul.Client(e.Context(), e, c.Name+"-consul-cli")
+func (c *ConsulNomadCluster) NomadClient(e runenv.Env, ca *pki.CertificateAuthority) (*NomadClient, error) {
+	consulHarness, err := c.Consul.ClientAgent(e.Context(), e, ca, c.Name+"-consul-cli")
 	if err != nil {
 		return nil, err
 	}
@@ -203,7 +239,7 @@ func (c *ConsulNomadCluster) NomadClient(e runenv.Env) (*NomadClient, error) {
 	if err != nil {
 		return nil, err
 	}
-	nomadHarness, err := c.Nomad.Client(e.Context(), e, c.Name+"-nomad-cli", consulAddr.Address.Host)
+	nomadHarness, err := c.Nomad.ClientAgent(e.Context(), e, ca, c.Name+"-nomad-cli", consulAddr.Address.Host)
 	if err != nil {
 		_ = consulHarness.Stop()
 		return nil, err
@@ -226,7 +262,7 @@ func (c *NomadClient) Wait() error {
 	return g.Wait()
 }
 
-func NewVaultCluster(ctx context.Context, e runenv.Env, name string, nodeCount int, parallelStart bool, consulAddrs []string) (c *VaultCluster, err error) {
+func NewVaultCluster(ctx context.Context, e runenv.Env, ca *pki.CertificateAuthority, name string, nodeCount int, parallelStart bool, consulAddrs []string) (c *VaultCluster, err error) {
 	cluster := VaultCluster{
 		group:       &errgroup.Group{},
 		consulAddrs: consulAddrs,
@@ -248,7 +284,11 @@ func NewVaultCluster(ctx context.Context, e runenv.Env, name string, nodeCount i
 	}
 
 	if !parallelStart {
-		err = cluster.addNode(ctx, e, nodes[0], "")
+		var consulAddr string
+		if 0 < len(consulAddrs) {
+			consulAddr = consulAddrs[0]
+		}
+		err = cluster.addNode(ctx, e, nodes[0], consulAddr, ca)
 		if err != nil {
 			return nil, err
 		}
@@ -275,7 +315,7 @@ func NewVaultCluster(ctx context.Context, e runenv.Env, name string, nodeCount i
 			if i < len(consulAddrs) {
 				consulAddr = consulAddrs[i]
 			}
-			if err := cluster.addNode(ctx, e, node, consulAddr); err != nil {
+			if err := cluster.addNode(ctx, e, node, consulAddr, ca); err != nil {
 				return nil, err
 			}
 		}
@@ -331,12 +371,20 @@ type VaultCluster struct {
 	unsealKeys  []string
 }
 
-func (c *VaultCluster) addNode(ctx context.Context, e runenv.Env, node yurt.Node, consulAddr string) error {
+func (c *VaultCluster) addNode(ctx context.Context, e runenv.Env, node yurt.Node, consulAddr string, ca *pki.CertificateAuthority) error {
+	var tls *pki.TLSConfigPEM
+	if ca != nil {
+		var err error
+		tls, err = ca.NomadServerTLS(ctx, "", "1h")
+		if err != nil {
+			return err
+		}
+	}
 	var cfg vault.VaultConfig
 	if consulAddr != "" {
-		cfg = vault.NewConsulConfig(consulAddr, "vault")
+		cfg = vault.NewConsulConfig(consulAddr, "vault", tls)
 	} else {
-		cfg = vault.NewRaftConfig(c.joinAddrs)
+		cfg = vault.NewRaftConfig(c.joinAddrs, tls)
 	}
 
 	h, err := e.Run(ctx, cfg, node)
@@ -346,6 +394,19 @@ func (c *VaultCluster) addNode(ctx context.Context, e runenv.Env, node yurt.Node
 	c.servers = append(c.servers, h)
 	c.group.Go(h.Wait)
 	return nil
+}
+
+func (c *VaultCluster) Clients() ([]*vaultapi.Client, error) {
+	var ret []*vaultapi.Client
+	for _, harness := range c.servers {
+		cli, err := vault.HarnessToAPI(harness)
+		if err != nil {
+			return nil, err
+		}
+		cli.SetToken(c.rootToken)
+		ret = append(ret, cli)
+	}
+	return ret, nil
 }
 
 func (c *VaultCluster) Wait() error {
@@ -366,8 +427,8 @@ type ConsulVaultCluster struct {
 	group        *errgroup.Group
 }
 
-func NewConsulVaultCluster(ctx context.Context, e runenv.Env, name string, nodeCount int) (*ConsulVaultCluster, error) {
-	consulCluster, err := NewConsulCluster(ctx, e, name, nodeCount)
+func NewConsulVaultCluster(ctx context.Context, e runenv.Env, ca *pki.CertificateAuthority, name string, nodeCount int) (*ConsulVaultCluster, error) {
+	consulCluster, err := NewConsulCluster(ctx, e, ca, name, nodeCount)
 	if err != nil {
 		return nil, err
 	}
@@ -381,7 +442,7 @@ func NewConsulVaultCluster(ctx context.Context, e runenv.Env, name string, nodeC
 
 	var consulAddrs []string
 	for i := 0; i < nodeCount; i++ {
-		consulHarness, err := consulCluster.Client(ctx, e, name+"-consul-cli")
+		consulHarness, err := consulCluster.ClientAgent(ctx, e, ca, name+"-consul-cli")
 		if err != nil {
 			return nil, err
 		}
@@ -396,7 +457,7 @@ func NewConsulVaultCluster(ctx context.Context, e runenv.Env, name string, nodeC
 		consulAddrs = append(consulAddrs, consulAddr.Address.Host)
 	}
 
-	cluster.Vault, err = NewVaultCluster(ctx, e, name, nodeCount, true, consulAddrs)
+	cluster.Vault, err = NewVaultCluster(ctx, e, ca, name, nodeCount, true, consulAddrs)
 	if err != nil {
 		return nil, err
 	}

@@ -176,8 +176,8 @@ func Start(ctx context.Context, client *dockerapi.Client, opts RunOptions) (*typ
 		<-ctx.Done()
 		log.Printf("context done for container %s, err: %v", opts.ContainerName, ctx.Err())
 		//log.Printf("killing %s", opts.ContainerName)
-		//_ = CleanupContainer(context.Background(), client, inspect.ID)
-		client.ContainerStop(context.Background(), container.ID, nil)
+		_ = CleanupContainer(context.Background(), client, inspect.ID)
+		//client.ContainerStop(context.Background(), container.ID, nil)
 	}(ctx)
 	return &inspect, nil
 }

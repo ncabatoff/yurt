@@ -33,6 +33,7 @@ type yurtConfig struct {
 	CACertFile      string   `yaml:"ca_cert_file,omitempty"`
 	serverIP        string
 	network         sockaddr.SockAddr
+	TLSConfig       *pki.TLSConfigPEM
 }
 
 func (c *yurtConfig) IsConsulServer() bool {
@@ -201,6 +202,8 @@ func (c *yurtConfig) setupTLS(vaultAddr, myIP string) error {
 	if err != nil {
 		return fmt.Errorf("error writing CA: %v", err)
 	}
+
+	c.TLSConfig = cert
 	return nil
 }
 
@@ -210,7 +213,8 @@ func runConsul(ctx context.Context, e runenv.Env, yc *yurtConfig) runner.Harness
 		log.Fatalf("error getting hostname: %v", err)
 	}
 
-	command := consul.NewConfig(yc.IsConsulServer(), yc.ConsulServerIPs)
+	// TODO add tls when used
+	command := consul.NewConfig(yc.IsConsulServer(), yc.ConsulServerIPs, yc.TLSConfig)
 	r, err := e.Run(ctx, command, yurt.Node{
 		Name: myName,
 	})
@@ -231,7 +235,7 @@ func runNomad(ctx context.Context, e runenv.Env, yc *yurtConfig) runner.Harness 
 	if yc.IsConsulServer() {
 		expect = len(yc.ConsulServerIPs)
 	}
-	command := nomad.NewConfig(expect, fmt.Sprintf("127.0.0.1:%d", consul.DefPorts().HTTP))
+	command := nomad.NewConfig(expect, fmt.Sprintf("127.0.0.1:%d", consul.DefPorts().HTTP), yc.TLSConfig)
 	r, err := e.Run(ctx, command, yurt.Node{
 		Name: myName,
 	})

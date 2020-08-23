@@ -148,7 +148,7 @@ func (d *DockerRunner) Start(ctx context.Context) (*harness, error) {
 	}
 	return &harness{
 		cancel:    cancel,
-		config:    adjConfig,
+		config:    d.config,
 		container: cont,
 		dockerAPI: d.DockerAPI,
 		ip:        ip,
@@ -166,8 +166,6 @@ func (d *harness) Endpoint(name string, local bool) (*runner.APIConfig, error) {
 		if name == "http" {
 			name = "https"
 		}
-		// TODO Does ConfigDir point to the local dir?
-		apiConfig.CAFile = filepath.Join(d.config.ConfigDir, "ca.pem")
 	}
 	apiConfig.Address.Scheme = name
 
@@ -178,8 +176,14 @@ func (d *harness) Endpoint(name string, local bool) (*runner.APIConfig, error) {
 			return nil, fmt.Errorf("no binding for API port")
 		}
 		apiConfig.Address.Host = fmt.Sprintf("%s:%s", "127.0.0.1", ports[0].HostPort)
+		if name == "https" {
+			apiConfig.CAFile = filepath.Join(d.config.ConfigDir, "ca.pem")
+		}
 	} else {
 		apiConfig.Address.Host = fmt.Sprintf("%s:%d", d.ip, port.Number)
+		if name == "https" {
+			apiConfig.CAFile = filepath.Join(d.config.ConfigDir, "ca.pem")
+		}
 	}
 
 	return &apiConfig, nil

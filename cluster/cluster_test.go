@@ -11,6 +11,7 @@ import (
 	"github.com/ncabatoff/yurt/binaries"
 	"github.com/ncabatoff/yurt/consul"
 	"github.com/ncabatoff/yurt/nomad"
+	"github.com/ncabatoff/yurt/pki"
 	"github.com/ncabatoff/yurt/runenv"
 	"github.com/ncabatoff/yurt/runner"
 	promapi "github.com/prometheus/client_golang/api"
@@ -20,33 +21,39 @@ import (
 func TestConsulExecCluster(t *testing.T) {
 	e, cleanup := runenv.NewExecTestEnv(t, 20*time.Second)
 	defer cleanup()
-	testConsulCluster(t, e)
+	testConsulCluster(t, e, nil)
+}
+
+func TestConsulExecClusterTLS(t *testing.T) {
+	e, cleanup := runenv.NewExecTestEnv(t, 20*time.Second)
+	defer cleanup()
+	testConsulCluster(t, e, VaultCA)
 }
 
 func TestConsulDockerCluster(t *testing.T) {
 	e, cleanup := runenv.NewDockerTestEnv(t, 20*time.Second)
 	defer cleanup()
-	testConsulCluster(t, e)
+	testConsulCluster(t, e, nil)
 }
 
-func testConsulCluster(t *testing.T, e runenv.Env) {
-	//ca, err := pki.NewCertificateAuthority(Vault.Cli)
-	//if err != nil {
-	//	t.Fatal(err)
-	//}
-	//cm := &ConsulCertificateMaker{ca: ca, ttl: "30m"}
+func TestConsulDockerClusterTLS(t *testing.T) {
+	e, cleanup := runenv.NewDockerTestEnv(t, 20*time.Second)
+	defer cleanup()
+	testConsulCluster(t, e, VaultCA)
+}
 
-	cluster, err := NewConsulCluster(e.Context(), e, t.Name(), 3)
+func testConsulCluster(t *testing.T, e runenv.Env, ca *pki.CertificateAuthority) {
+	cluster, err := NewConsulCluster(e.Context(), e, ca, t.Name(), 3)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer cluster.Stop()
 	e.Go(cluster.Wait)
 
-	client, err := cluster.Client(e.Context(), e, t.Name()+"-consul-cli")
+	client, err := cluster.ClientAgent(e.Context(), e, ca, t.Name()+"-consul-cli")
 	e.Go(client.Wait)
 	if err := consul.LeadersHealthy(e.Context(), []runner.Harness{client}, cluster.peerAddrs); err != nil {
-		t.Fatal(err)
+		t.Fatalf("consul cluster not healthy: %v", err)
 	}
 }
 
@@ -57,25 +64,32 @@ func TestNomadDockerCluster(t *testing.T) {
 
 	// Note that we're not testing running docker jobs in Nomad yet, it's only
 	// the infrastructure that's containerized here.
-	testNomadCluster(t, e, execDockerJobHCL(t))
+	testNomadCluster(t, e, nil, execDockerJobHCL(t))
 }
 
 func TestNomadExecCluster(t *testing.T) {
 	e, cleanup := runenv.NewExecTestEnv(t, 40*time.Second)
 	defer cleanup()
 
-	testNomadCluster(t, e, execDockerJobHCL(t))
+	testNomadCluster(t, e, nil, execDockerJobHCL(t))
 }
 
-func testNomadCluster(t *testing.T, e runenv.Env, job string) {
-	cnc, err := NewConsulNomadCluster(e.Context(), e, t.Name(), 3)
+func TestNomadExecClusterTLS(t *testing.T) {
+	e, cleanup := runenv.NewExecTestEnv(t, 40*time.Second)
+	defer cleanup()
+
+	testNomadCluster(t, e, VaultCA, execDockerJobHCL(t))
+}
+
+func testNomadCluster(t *testing.T, e runenv.Env, ca *pki.CertificateAuthority, job string) {
+	cnc, err := NewConsulNomadCluster(e.Context(), e, ca, t.Name(), 3)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer cnc.Stop()
 	e.Go(cnc.Wait)
 
-	nomadClient, err := cnc.NomadClient(e)
+	nomadClient, err := cnc.NomadClient(e, ca)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,17 +250,17 @@ EOH
 func TestVaultExecCluster(t *testing.T) {
 	e, cleanup := runenv.NewExecTestEnv(t, 30*time.Second)
 	defer cleanup()
-	testVaultCluster(t, e)
+	testVaultCluster(t, e, nil)
 }
 
-func testVaultCluster(t *testing.T, e runenv.Env) {
-	//ca, err := pki.NewCertificateAuthority(Vault.Cli)
-	//if err != nil {
-	//	t.Fatal(err)
-	//}
-	//cm := &ConsulCertificateMaker{ca: ca, ttl: "30m"}
+func TestVaultExecClusterTLS(t *testing.T) {
+	e, cleanup := runenv.NewExecTestEnv(t, 30*time.Second)
+	defer cleanup()
+	testVaultCluster(t, e, VaultCA)
+}
 
-	cluster, err := NewVaultCluster(e.Context(), e, t.Name(), 3, false, nil)
+func testVaultCluster(t *testing.T, e runenv.Env, ca *pki.CertificateAuthority) {
+	cluster, err := NewVaultCluster(e.Context(), e, ca, t.Name(), 3, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,20 +271,37 @@ func testVaultCluster(t *testing.T, e runenv.Env) {
 func TestConsulVaultExecCluster(t *testing.T) {
 	e, cleanup := runenv.NewExecTestEnv(t, 30*time.Second)
 	defer cleanup()
-	testConsulVaultCluster(t, e)
+	testConsulVaultCluster(t, e, nil)
 }
 
-func testConsulVaultCluster(t *testing.T, e runenv.Env) {
-	//ca, err := pki.NewCertificateAuthority(Vault.Cli)
-	//if err != nil {
-	//	t.Fatal(err)
-	//}
-	//cm := &ConsulCertificateMaker{ca: ca, ttl: "30m"}
+func TestConsulVaultExecClusterTLS(t *testing.T) {
+	e, cleanup := runenv.NewExecTestEnv(t, 30*time.Second)
+	defer cleanup()
+	testConsulVaultCluster(t, e, VaultCA)
+}
 
-	cluster, err := NewConsulVaultCluster(e.Context(), e, t.Name(), 3)
+func testConsulVaultCluster(t *testing.T, e runenv.Env, ca *pki.CertificateAuthority) {
+	cluster, err := NewConsulVaultCluster(e.Context(), e, ca, t.Name(), 3)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer cluster.Stop()
 	e.Go(cluster.Wait)
+}
+
+func TestCertificateAuthority_ConsulServerTLS(t *testing.T) {
+	tlspem, err := VaultCA.ConsulServerTLS(context.Background(), "192.168.2.51", "168h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// TODO parse and check values
+	if tlspem.CA == "" {
+		t.Fatal("no cacert")
+	}
+	if tlspem.Cert == "" {
+		t.Fatal("no cert")
+	}
+	if tlspem.PrivateKey == "" {
+		t.Fatal("no key")
+	}
 }

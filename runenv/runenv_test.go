@@ -32,7 +32,7 @@ func runConsulServer(t *testing.T, e Env) runner.Harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	command := consul.NewConfig(true, []string{joinAddr})
+	command := consul.NewConfig(true, []string{joinAddr}, nil)
 
 	h, err := e.Run(e.Context(), command, node)
 	if err != nil {
@@ -59,7 +59,7 @@ func runConsul(t *testing.T, e Env, server runner.Harness) runner.Harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	command := consul.NewConfig(false, []string{serfAddr.Address.Host})
+	command := consul.NewConfig(false, []string{serfAddr.Address.Host}, nil)
 	expectedPeerAddrs := []string{serverAddr.Address.Host}
 
 	h, err := e.Run(e.Context(), command, e.AllocNode(t.Name()+"consul-cli", consul.DefPorts().RunnerPorts()))
@@ -88,7 +88,7 @@ func runNomad(t *testing.T, e Env, consulHarness runner.Harness) runner.Harness 
 		t.Fatal(err)
 	}
 
-	command := nomad.NewConfig(1, consulAddr.Address.Host)
+	command := nomad.NewConfig(1, consulAddr.Address.Host, nil)
 	nomadServer, err := e.Run(e.Context(), command, node)
 	if err != nil {
 		t.Fatal(err)
@@ -143,9 +143,9 @@ func runVaultServer(t *testing.T, e Env, consulAddr string) runner.Harness {
 	}
 	var command runner.Command
 	if consulAddr != "" {
-		command = vault.NewConsulConfig(consulAddr, "vault")
+		command = vault.NewConsulConfig(consulAddr, "vault", nil)
 	} else {
-		command = vault.NewRaftConfig([]string{apiAddr})
+		command = vault.NewRaftConfig([]string{apiAddr}, nil)
 	}
 
 	h, err := e.Run(e.Context(), command, node)
