@@ -184,7 +184,7 @@ func testJobs(t *testing.T, ctx context.Context, consulCli *consulapi.Client, no
 }
 
 func promDockerJobHCL(t *testing.T) string {
-	return fmt.Sprintf(promJobHCL, "", "docker", `image = "prom/prometheus:v2.16.0"`)
+	return fmt.Sprintf(promJobHCL, "", "docker", `image = "prom/prometheus:v2.18.0"`)
 }
 
 func execDockerJobHCL(t *testing.T) string {
@@ -278,6 +278,13 @@ func TestConsulVaultExecClusterTLS(t *testing.T) {
 	e, cleanup := runenv.NewExecTestEnv(t, 30*time.Second)
 	defer cleanup()
 	testConsulVaultCluster(t, e, VaultCA)
+}
+
+func TestConsulVaultDockerCluster(t *testing.T) {
+	t.Skip("need https://github.com/hashicorp/vault/pull/9109")
+	e, cleanup := runenv.NewDockerTestEnv(t, 30*time.Second)
+	defer cleanup()
+	testConsulVaultCluster(t, e, nil)
 }
 
 func testConsulVaultCluster(t *testing.T, e runenv.Env, ca *pki.CertificateAuthority) {

@@ -315,7 +315,7 @@ func NewVaultCluster(ctx context.Context, e runenv.Env, ca *pki.CertificateAutho
 			return nil, err
 		}
 
-		cluster.rootToken, cluster.unsealKeys, err = vault.Initialize(ctx, cli)
+		cluster.rootToken, cluster.unsealKeys, err = vault.Initialize(ctx, cli, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -342,7 +342,7 @@ func NewVaultCluster(ctx context.Context, e runenv.Env, ca *pki.CertificateAutho
 		}
 
 		if i == 0 && parallelStart {
-			cluster.rootToken, cluster.unsealKeys, err = vault.Initialize(ctx, cli)
+			cluster.rootToken, cluster.unsealKeys, err = vault.Initialize(ctx, cli, nil)
 			if err != nil {
 				return nil, err
 			}

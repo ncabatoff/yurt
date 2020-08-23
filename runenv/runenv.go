@@ -193,9 +193,11 @@ func (d *DockerEnv) Run(ctx context.Context, cmd runner.Command, node yurt.Node)
 	var image string
 	switch cmd.Name() {
 	case "consul":
-		image = "consul:1.7.0-beta4"
+		image = "consul:1.8.3"
 	case "nomad":
 		image = "noenv/nomad:0.10.3"
+	case "vault":
+		image = "vault:1.5.2"
 	default:
 		return nil, fmt.Errorf("unknown config %q", cmd.Name())
 	}

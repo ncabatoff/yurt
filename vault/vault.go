@@ -3,6 +3,8 @@ package vault
 import (
 	"context"
 	"fmt"
+	"log"
+	"strings"
 	"time"
 
 	vaultapi "github.com/hashicorp/vault/api"
@@ -44,6 +46,11 @@ func (c Ports) RunnerPorts() yurt.Ports {
 	}
 }
 
+type Seal struct {
+	Type   string
+	Config map[string]string
+}
+
 // ConsulConfig describes how to run a single Consul agent.
 type VaultConfig struct {
 	Common runner.Config
@@ -57,6 +64,7 @@ type VaultConfig struct {
 	// ConsulPath gives the Consul KV prefix where Vault will store its data.
 	// Only needed for Consul storage.
 	ConsulPath string
+	Seal       *Seal
 }
 
 func (vc VaultConfig) Config() runner.Config {
@@ -202,6 +210,18 @@ telemetry {
 		config += vc.raftConfig()
 	}
 
+	if vc.Seal != nil {
+		var kvals []string
+		for k, v := range vc.Seal.Config {
+			kvals = append(kvals, fmt.Sprintf(`%s = "%s"`, k, v))
+		}
+		config += fmt.Sprintf(`
+seal "%s" {
+  %s
+}
+`, vc.Seal.Type, strings.Join(kvals, "\n  "))
+	}
+
 	files["vault.hcl"] = config
 	return files
 }
@@ -255,15 +275,26 @@ func LeadersHealthy(ctx context.Context, servers []runner.Harness) error {
 	return runner.LeaderAPIsHealthy(ctx, apis)
 }
 
-func Initialize(ctx context.Context, cli *vaultapi.Client) (string, []string, error) {
-	resp, err := cli.Sys().Init(&vaultapi.InitRequest{
+func Initialize(ctx context.Context, cli *vaultapi.Client, seal *Seal) (string, []string, error) {
+	req := &vaultapi.InitRequest{
 		SecretShares:    1,
 		SecretThreshold: 1,
-	})
-	if err == nil {
-		return resp.RootToken, resp.Keys, nil
 	}
-	return "", nil, err
+	if seal != nil {
+		req = &vaultapi.InitRequest{
+			RecoveryShares:    1,
+			RecoveryThreshold: 1,
+		}
+	}
+	resp, err := cli.Sys().Init(req)
+	switch {
+	case err == nil && seal != nil:
+		return resp.RootToken, resp.RecoveryKeys, nil
+	case err == nil && seal == nil:
+		return resp.RootToken, resp.Keys, nil
+	default:
+		return "", nil, err
+	}
 }
 
 func Status(ctx context.Context, cli *vaultapi.Client) (*vaultapi.SealStatusResponse, error) {
@@ -282,7 +313,7 @@ func Status(ctx context.Context, cli *vaultapi.Client) (*vaultapi.SealStatusResp
 	return nil, ctx.Err()
 }
 
-func Unseal(ctx context.Context, cli *vaultapi.Client, key string) (err error) {
+func Unseal(ctx context.Context, cli *vaultapi.Client, key string) error {
 	resp, err := cli.Sys().Unseal(key)
 	if err != nil {
 		return err
@@ -302,4 +333,66 @@ func Unseal(ctx context.Context, cli *vaultapi.Client, key string) (err error) {
 		time.Sleep(500 * time.Millisecond)
 	}
 	return fmt.Errorf("unseal failed, last error: %v", err)
+}
+
+func NewSealSource(ctx context.Context, cli *vaultapi.Client, uniqueID string) (*Seal, error) {
+	rootPath := "transit"
+	err := cli.Sys().Mount(rootPath, &vaultapi.MountInput{
+		Type: "transit",
+	})
+	if err != nil {
+		// If we get an error mounting, see if it's already mounted.
+		mounts, listerr := cli.Sys().ListMounts()
+		if listerr != nil {
+			return nil, err
+		}
+		var found bool
+		for path, mount := range mounts {
+			if mount.Type == "transit" && path == "transit/" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, err
+		}
+	}
+
+	_, err = cli.Logical().Write("transit/keys/"+uniqueID, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	err = cli.Sys().PutPolicy("transit-seal-client", fmt.Sprintf(`
+path "transit/encrypt/%s" {
+  capabilities = ["update"]
+}
+
+path "transit/decrypt/%s" {
+  capabilities = ["update"]
+}
+`, uniqueID, uniqueID))
+	if err != nil {
+		return nil, err
+	}
+
+	secret, err := cli.Logical().Write("auth/token/create", map[string]interface{}{
+		"no_parent": true,
+		"policies":  []string{"transit-seal-client"},
+	})
+	if err != nil {
+		return nil, err
+	}
+	log.Println(secret.Auth.Policies)
+
+	return &Seal{
+		Type: "transit",
+		Config: map[string]string{
+			"address":         cli.Address(),
+			"token":           secret.Auth.ClientToken,
+			"key_name":        uniqueID,
+			"mount_path":      "transit/",
+			"tls_skip_verify": "true",
+		},
+	}, nil
 }

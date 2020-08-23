@@ -132,23 +132,25 @@ func TestVaultExec(t *testing.T) {
 	e, cleanup := NewExecTestEnv(t, 15*time.Second)
 	defer cleanup()
 
-	e.Go(runVaultServer(t, e, "").Wait)
+	v1, _ := runVaultServer(t, e, "", nil)
+	e.Go(v1.Wait)
 }
 
-func runVaultServer(t *testing.T, e Env, consulAddr string) runner.Harness {
+func runVaultServer(t *testing.T, e Env, consulAddr string, seal *vault.Seal) (runner.Harness, string) {
 	node := e.AllocNode(t.Name()+"-vault", vault.DefPorts().RunnerPorts())
 	apiAddr, err := node.Address(vault.PortNames.HTTP)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var command runner.Command
+	var vcfg vault.VaultConfig
 	if consulAddr != "" {
-		command = vault.NewConsulConfig(consulAddr, "vault", nil)
+		vcfg = vault.NewConsulConfig(consulAddr, "vault", nil)
 	} else {
-		command = vault.NewRaftConfig([]string{apiAddr}, nil)
+		vcfg = vault.NewRaftConfig([]string{apiAddr}, nil)
 	}
+	vcfg.Seal = seal
 
-	h, err := e.Run(e.Context(), command, node)
+	h, err := e.Run(e.Context(), vcfg, node)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,8 +168,9 @@ func runVaultServer(t *testing.T, e Env, consulAddr string) runner.Harness {
 	}
 
 	var unsealKeys []string
+	var rootToken string
 	//if !sealStatus.Initialized {
-	_, unsealKeys, err = vault.Initialize(ctx, cli)
+	rootToken, unsealKeys, err = vault.Initialize(ctx, cli, seal)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,5 +184,26 @@ func runVaultServer(t *testing.T, e Env, consulAddr string) runner.Harness {
 	if err := vault.LeadersHealthy(e.Context(), []runner.Harness{h}); err != nil {
 		t.Fatal(err)
 	}
-	return h
+	return h, rootToken
+}
+
+func TestVaultExecAutoSeal(t *testing.T) {
+	e, cleanup := NewExecTestEnv(t, 30*time.Second)
+	defer cleanup()
+
+	v1, v1root := runVaultServer(t, e, "", nil)
+	e.Go(v1.Wait)
+
+	cli, err := vault.HarnessToAPI(v1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cli.SetToken(v1root)
+	seal, err := vault.NewSealSource(e.Ctx, cli, t.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	v2, _ := runVaultServer(t, e, "", seal)
+	e.Go(v2.Wait)
 }
