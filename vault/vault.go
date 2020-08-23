@@ -178,11 +178,16 @@ func (vc VaultConfig) Files() map[string]string {
 	}
 	config := fmt.Sprintf(`
 disable_mlock = true
+ui = true
 api_addr = "%s"
 cluster_addr = "%s"
 listener "tcp" {
+  telemetry {
+	unauthenticated_metrics_access = true
+  }
   address = "%s"
   tls_disable = %v
+  tls_disable_client_certs = true
 %s
 }
 telemetry {

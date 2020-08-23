@@ -105,6 +105,18 @@ func (c *ConsulCluster) Stop() {
 	}
 }
 
+func (c *ConsulCluster) Addrs() ([]string, error) {
+	var addrs []string
+	for _, harness := range c.servers {
+		cfg, err := consul.HarnessToConfig(harness)
+		if err != nil {
+			return nil, err
+		}
+		addrs = append(addrs, cfg.Address)
+	}
+	return addrs, nil
+}
+
 func NewNomadCluster(ctx context.Context, e runenv.Env, ca *pki.CertificateAuthority, name string, nodeCount int, consulCluster *ConsulCluster) (*NomadCluster, error) {
 	cluster := NomadCluster{group: &errgroup.Group{}}
 	var nodes []yurt.Node

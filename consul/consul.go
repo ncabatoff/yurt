@@ -195,6 +195,19 @@ performance {
 	return files
 }
 
+func HarnessToConfig(r runner.Harness) (*consulapi.Config, error) {
+	apicfg, err := r.Endpoint("http", true)
+	if err != nil {
+		return nil, err
+	}
+
+	cfg := consulapi.DefaultConfig()
+	cfg.Address = apicfg.Address.String()
+	cfg.TLSConfig.CAFile = apicfg.CAFile
+
+	return cfg, nil
+}
+
 func HarnessToAPI(r runner.Harness) (*consulapi.Client, error) {
 	apicfg, err := r.Endpoint("http", true)
 	if err != nil {

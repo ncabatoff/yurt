@@ -21,7 +21,7 @@ require (
 	github.com/opencontainers/runc v0.1.1 // indirect
 	github.com/pkg/errors v0.8.1
 	github.com/prometheus/client_golang v1.4.1
-	github.com/skratchdot/open-golang v0.0.0-20200116055534-eef842397966 // indirect
+	github.com/skratchdot/open-golang v0.0.0-20200116055534-eef842397966
 	go.uber.org/atomic v1.5.1
 	golang.org/x/sync v0.0.0-20190911185100-cd5d95a43a6e
 	gopkg.in/yaml.v2 v2.2.8

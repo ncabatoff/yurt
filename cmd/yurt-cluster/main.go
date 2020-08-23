@@ -9,9 +9,10 @@ import (
 	"syscall"
 
 	"github.com/ncabatoff/yurt/cluster"
+	"github.com/ncabatoff/yurt/nomad"
 	"github.com/ncabatoff/yurt/pki"
 	"github.com/ncabatoff/yurt/runenv"
-	//"github.com/skratchdot/open-golang/open"
+	"github.com/skratchdot/open-golang/open"
 )
 
 func main() {
@@ -20,12 +21,17 @@ func main() {
 		flagFirstPort = flag.Int("first-port", 23000, "first port to allocate to cluster, only for mode=exec")
 		flagCIDR      = flag.String("cidr", "", "cidr to allocate to cluster, only for mode=docker")
 		flagNodes     = flag.Int("nodes", 3, "number of server nodes")
-		//flagOpen        = flag.Bool("open", true, "open browser to Consul and Nomad UIs")
-		flagTLS     = flag.Bool("tls", false, "generate certs and enable TLS authentication")
-		flagWorkDir = flag.String("workdir", "/tmp/yurt", "directory to store files")
+		flagOpen      = flag.Bool("open", true, "open browser to Consul and Nomad UIs")
+		flagTLS       = flag.Bool("tls", false, "generate certs and enable TLS authentication")
+		flagWorkDir   = flag.String("workdir", "/tmp/yurt", "directory to store files")
+		flagVault     = flag.Bool("vault", true, "create a Vault cluster")
+		flagNomad     = flag.Bool("nomad", true, "create a Nomad cluster")
 	)
 	flag.Parse()
 
+	if !*flagNomad && !*flagVault {
+		log.Fatal("must specify at least one of -vault=true and -nomad=true")
+	}
 	var e runenv.Env
 	switch *flagMode {
 	case "exec":
@@ -55,19 +61,61 @@ func main() {
 		}
 	}
 
-	cnc, err := cluster.NewConsulNomadCluster(e.Context(), e, ca, "cluster1", *flagNodes)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer cnc.Stop()
-	e.Go(cnc.Wait)
+	if *flagVault {
+		vc, err := cluster.NewVaultCluster(e.Context(), e, ca, "cluster1", *flagNodes, false, nil)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer vc.Stop()
+		e.Go(vc.Wait)
 
-	nomadClient, err := cnc.NomadClient(e, ca)
-	if err != nil {
-		log.Fatal(err)
+		if *flagOpen {
+			clients, err := vc.Clients()
+			if err != nil {
+				log.Fatal(err)
+			}
+			err = open.Start(clients[0].Address())
+			if err != nil {
+				log.Fatal(err)
+			}
+		}
 	}
-	defer nomadClient.Stop()
-	e.Go(nomadClient.Wait)
+
+	if *flagNomad {
+		cnc, err := cluster.NewConsulNomadCluster(e.Context(), e, ca, "cluster1", *flagNodes)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer cnc.Stop()
+		e.Go(cnc.Wait)
+
+		nomadClient, err := cnc.NomadClient(e, ca)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer nomadClient.Stop()
+		e.Go(nomadClient.Wait)
+
+		if *flagOpen {
+			addrs, err := cnc.Consul.Addrs()
+			if err != nil {
+				log.Fatal(err)
+			}
+			err = open.Start(addrs[0])
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			nc, err := nomad.HarnessToAPI(nomadClient.NomadHarness)
+			if err != nil {
+				log.Fatal(err)
+			}
+			err = open.Start(nc.Address())
+			if err != nil {
+				log.Fatal(err)
+			}
+		}
+	}
 
 	sigchan := make(chan os.Signal)
 	signal.Notify(sigchan, syscall.SIGINT)
