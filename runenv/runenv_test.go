@@ -176,7 +176,7 @@ func runVaultServer(t *testing.T, e Env, consulAddr string, seal *vault.Seal) (r
 	}
 	//}
 
-	err = vault.Unseal(ctx, cli, unsealKeys[0])
+	err = vault.Unseal(ctx, cli, unsealKeys[0], false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +187,7 @@ func runVaultServer(t *testing.T, e Env, consulAddr string, seal *vault.Seal) (r
 	return h, rootToken
 }
 
-func TestVaultExecAutoSeal(t *testing.T) {
+func TestVaultExecTransitSeal(t *testing.T) {
 	e, cleanup := NewExecTestEnv(t, 30*time.Second)
 	defer cleanup()
 

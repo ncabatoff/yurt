@@ -252,7 +252,7 @@ func TestVaultExecCluster(t *testing.T) {
 	e, cleanup := runenv.NewExecTestEnv(t, 30*time.Second)
 	defer cleanup()
 
-	vc, err := NewVaultCluster(e.Context(), e, nil, t.Name(), 3, false, nil)
+	vc, err := NewVaultCluster(e.Context(), e, nil, t.Name(), 3, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,11 +260,83 @@ func TestVaultExecCluster(t *testing.T) {
 	e.Go(vc.Wait)
 }
 
+func TestVaultExecClusterTransitSeal(t *testing.T) {
+	e, cleanup := runenv.NewExecTestEnv(t, 30*time.Second)
+	defer cleanup()
+
+	seal, err := vault.NewSealSource(e.Ctx, VaultCLI, t.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vc, err := NewVaultCluster(e.Context(), e, nil, t.Name(), 3, nil, seal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer vc.Stop()
+	e.Go(vc.Wait)
+}
+
+func TestVaultExecClusterMigrateTransitToShamir(t *testing.T) {
+	e, cleanup := runenv.NewExecTestEnv(t, 60*time.Second)
+	defer cleanup()
+
+	vc1, err := NewVaultCluster(e.Context(), e, nil, t.Name()+"-sealer", 1, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer vc1.Stop()
+	e.Go(vc1.Wait)
+
+	vclis, err := vc1.Clients()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	seal, err := vault.NewSealSource(e.Ctx, vclis[0], t.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vc2, err := NewVaultCluster(e.Context(), e, nil, t.Name(), 3, nil, seal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer vc2.Stop()
+	e.Go(vc2.Wait)
+
+	seal.Config["disabled"] = "true"
+	for i := 2; i >= 0; i-- {
+		err = vc2.replaceNode(e.Context(), e, i, nil, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := vault.LeadersHealthy(e.Context(), vc2.servers); err != nil {
+		t.Fatal(err)
+	}
+
+	vc1.Stop()
+	vc2.seal = nil
+
+	for i := 2; i >= 0; i-- {
+		err = vc2.replaceNode(e.Context(), e, i, nil, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := vault.LeadersHealthy(e.Context(), vc2.servers); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestVaultExecClusterTLS(t *testing.T) {
 	e, cleanup := runenv.NewExecTestEnv(t, 30*time.Second)
 	defer cleanup()
 
-	vc, err := NewVaultCluster(e.Context(), e, VaultCA, t.Name(), 3, false, nil)
+	vc, err := NewVaultCluster(e.Context(), e, VaultCA, t.Name(), 3, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,16 +348,18 @@ func TestVaultExecClusterWithReplace(t *testing.T) {
 	e, cleanup := runenv.NewExecTestEnv(t, 30*time.Second)
 	defer cleanup()
 
-	vc, err := NewVaultCluster(e.Context(), e, nil, t.Name(), 3, false, nil)
+	vc, err := NewVaultCluster(e.Context(), e, nil, t.Name(), 3, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer vc.Stop()
 	e.Go(vc.Wait)
 
-	err = vc.replaceNode(e.Context(), e, 1, nil)
-	if err != nil {
-		t.Fatal(err)
+	for i := 2; i >= 0; i-- {
+		err = vc.replaceNode(e.Context(), e, i, nil, false)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	if err := vault.LeadersHealthy(e.Context(), vc.servers); err != nil {
@@ -313,7 +387,7 @@ func TestConsulVaultDockerCluster(t *testing.T) {
 }
 
 func testConsulVaultCluster(t *testing.T, e runenv.Env, ca *pki.CertificateAuthority) {
-	cluster, err := NewConsulVaultCluster(e.Context(), e, ca, t.Name(), 3)
+	cluster, err := NewConsulVaultCluster(e.Context(), e, ca, t.Name(), 3, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

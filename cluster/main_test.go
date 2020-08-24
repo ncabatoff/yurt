@@ -3,6 +3,7 @@ package cluster
 import (
 	"context"
 	"fmt"
+	vaultapi "github.com/hashicorp/vault/api"
 	"github.com/ncabatoff/yurt/pki"
 	"github.com/ncabatoff/yurt/runenv"
 	"io/ioutil"
@@ -11,6 +12,7 @@ import (
 )
 
 var VaultCA *pki.CertificateAuthority
+var VaultCLI *vaultapi.Client
 
 func TestMain(m *testing.M) {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -44,7 +46,7 @@ func TestMain(m *testing.M) {
 		}
 	}()
 
-	c, err := NewVaultCluster(ctx, e, nil, "testmain-vaultca", 1, false, nil)
+	c, err := NewVaultCluster(ctx, e, nil, "testmain-vaultca", 1, nil, nil)
 	fail(err)
 	exit = func(code int) {
 		c.Stop()
@@ -59,6 +61,8 @@ func TestMain(m *testing.M) {
 
 	VaultCA, err = pki.NewCertificateAuthority(clients[0])
 	fail(err)
+
+	VaultCLI = clients[0]
 
 	ret := m.Run()
 	exit(ret)

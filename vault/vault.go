@@ -133,13 +133,13 @@ func (vc VaultConfig) raftConfig() string {
 	}
 
 	return fmt.Sprintf(`
-	storage "raft" {
-		path = "%s"
-		node_id = "%s"
-		performance_multiplier = "1"
-		%s
-	}
-	`, vc.Common.DataDir, vc.Common.NodeName, retryJoin)
+storage "raft" {
+  path = "%s"
+  node_id = "%s"
+  performance_multiplier = "1"
+  %s
+}
+`, vc.Common.DataDir, vc.Common.NodeName, retryJoin)
 }
 
 func (vc VaultConfig) consulConfig() string {
@@ -155,8 +155,8 @@ func (vc VaultConfig) consulConfig() string {
 
 	return fmt.Sprintf(`
 storage "consul" {
-    address = "%s"
-    path = "%s"
+  address = "%s"
+  path = "%s"
 %s
 }
 	`, vc.ConsulAddr, vc.ConsulPath, tls)
@@ -222,6 +222,7 @@ seal "%s" {
 `, vc.Seal.Type, strings.Join(kvals, "\n  "))
 	}
 
+	log.Println(config)
 	files["vault.hcl"] = config
 	return files
 }
@@ -281,10 +282,8 @@ func Initialize(ctx context.Context, cli *vaultapi.Client, seal *Seal) (string, 
 		SecretThreshold: 1,
 	}
 	if seal != nil {
-		req = &vaultapi.InitRequest{
-			RecoveryShares:    1,
-			RecoveryThreshold: 1,
-		}
+		req.RecoveryShares = 1
+		req.RecoveryThreshold = 1
 	}
 	resp, err := cli.Sys().Init(req)
 	switch {
@@ -313,8 +312,11 @@ func Status(ctx context.Context, cli *vaultapi.Client) (*vaultapi.SealStatusResp
 	return nil, ctx.Err()
 }
 
-func Unseal(ctx context.Context, cli *vaultapi.Client, key string) error {
-	resp, err := cli.Sys().Unseal(key)
+func Unseal(ctx context.Context, cli *vaultapi.Client, key string, migrate bool) error {
+	resp, err := cli.Sys().UnsealWithOptions(&vaultapi.UnsealOpts{
+		Key:     key,
+		Migrate: migrate,
+	})
 	if err != nil {
 		return err
 	}

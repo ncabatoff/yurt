@@ -278,11 +278,12 @@ func (c *NomadClient) Wait() error {
 // NewVaultCluster launches a vault cluster, possibly restoring a previous state
 // depending on how the env allocs nodes and the cluster name given.
 func NewVaultCluster(ctx context.Context, e runenv.Env, ca *pki.CertificateAuthority, name string, nodeCount int,
-	parallelStart bool, consulAddrs []string) (ret *VaultCluster, err error) {
+	consulAddrs []string, seal *vault.Seal) (ret *VaultCluster, err error) {
 
 	cluster := &VaultCluster{
 		group:       &errgroup.Group{},
 		consulAddrs: consulAddrs,
+		seal:        seal,
 	}
 	defer func() {
 		if err != nil {
@@ -331,7 +332,7 @@ func NewVaultCluster(ctx context.Context, e runenv.Env, ca *pki.CertificateAutho
 		}
 	}
 	if !status.Initialized || status.Sealed {
-		err = vault.Unseal(ctx, client, cluster.unsealKeys[0])
+		err = vault.Unseal(ctx, client, cluster.unsealKeys[0], false)
 		if err != nil {
 			return nil, err
 		}
@@ -354,7 +355,7 @@ func NewVaultCluster(ctx context.Context, e runenv.Env, ca *pki.CertificateAutho
 			if status.Sealed {
 				g.Go(func() error {
 					for gctx.Err() == nil {
-						err = vault.Unseal(gctx, client, cluster.unsealKeys[0])
+						err = vault.Unseal(gctx, client, cluster.unsealKeys[0], false)
 						if err == nil {
 							return nil
 						}
@@ -415,11 +416,12 @@ func (c *VaultCluster) startVault(ctx context.Context, e runenv.Env, node yurt.N
 	} else {
 		cfg = vault.NewRaftConfig(c.joinAddrs, tls)
 	}
+	cfg.Seal = c.seal
 
 	return e.Run(ctx, cfg, node)
 }
 
-func (c *VaultCluster) replaceNode(ctx context.Context, e runenv.Env, idx int, ca *pki.CertificateAuthority) error {
+func (c *VaultCluster) replaceNode(ctx context.Context, e runenv.Env, idx int, ca *pki.CertificateAuthority, migrate bool) error {
 	err := c.servers[idx].Stop()
 	if err != nil {
 		return err
@@ -448,12 +450,14 @@ func (c *VaultCluster) replaceNode(ctx context.Context, e runenv.Env, idx int, c
 		return err
 	}
 
-	err = vault.Unseal(ctx, client, c.unsealKeys[0])
-	if err != nil {
-		return err
+	for ctx.Err() == nil {
+		err = vault.Unseal(ctx, client, c.unsealKeys[0], migrate)
+		if err == nil {
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
-
-	return nil
+	return errors.Wrap(err, ctx.Err().Error())
 }
 
 func (c *VaultCluster) client(i int) (*vaultapi.Client, error) {
@@ -495,7 +499,8 @@ type ConsulVaultCluster struct {
 	group        *errgroup.Group
 }
 
-func NewConsulVaultCluster(ctx context.Context, e runenv.Env, ca *pki.CertificateAuthority, name string, nodeCount int) (*ConsulVaultCluster, error) {
+func NewConsulVaultCluster(ctx context.Context, e runenv.Env, ca *pki.CertificateAuthority, name string, nodeCount int,
+	seal *vault.Seal) (*ConsulVaultCluster, error) {
 	consulCluster, err := NewConsulCluster(ctx, e, ca, name, nodeCount)
 	if err != nil {
 		return nil, err
@@ -525,7 +530,7 @@ func NewConsulVaultCluster(ctx context.Context, e runenv.Env, ca *pki.Certificat
 		consulAddrs = append(consulAddrs, consulAddr.Address.Host)
 	}
 
-	cluster.Vault, err = NewVaultCluster(ctx, e, ca, name, nodeCount, true, consulAddrs)
+	cluster.Vault, err = NewVaultCluster(ctx, e, ca, name, nodeCount, consulAddrs, seal)
 	if err != nil {
 		return nil, err
 	}
