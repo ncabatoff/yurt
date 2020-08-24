@@ -14,6 +14,7 @@ import (
 	"github.com/ncabatoff/yurt/pki"
 	"github.com/ncabatoff/yurt/runenv"
 	"github.com/ncabatoff/yurt/runner"
+	"github.com/ncabatoff/yurt/vault"
 	promapi "github.com/prometheus/client_golang/api"
 	promv1 "github.com/prometheus/client_golang/api/prometheus/v1"
 )
@@ -250,22 +251,46 @@ EOH
 func TestVaultExecCluster(t *testing.T) {
 	e, cleanup := runenv.NewExecTestEnv(t, 30*time.Second)
 	defer cleanup()
-	testVaultCluster(t, e, nil)
+
+	vc, err := NewVaultCluster(e.Context(), e, nil, t.Name(), 3, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer vc.Stop()
+	e.Go(vc.Wait)
 }
 
 func TestVaultExecClusterTLS(t *testing.T) {
 	e, cleanup := runenv.NewExecTestEnv(t, 30*time.Second)
 	defer cleanup()
-	testVaultCluster(t, e, VaultCA)
-}
 
-func testVaultCluster(t *testing.T, e runenv.Env, ca *pki.CertificateAuthority) {
-	cluster, err := NewVaultCluster(e.Context(), e, ca, t.Name(), 3, false, nil)
+	vc, err := NewVaultCluster(e.Context(), e, VaultCA, t.Name(), 3, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cluster.Stop()
-	e.Go(cluster.Wait)
+	defer vc.Stop()
+	e.Go(vc.Wait)
+}
+
+func TestVaultExecClusterWithReplace(t *testing.T) {
+	e, cleanup := runenv.NewExecTestEnv(t, 30*time.Second)
+	defer cleanup()
+
+	vc, err := NewVaultCluster(e.Context(), e, nil, t.Name(), 3, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer vc.Stop()
+	e.Go(vc.Wait)
+
+	err = vc.replaceNode(e.Context(), e, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := vault.LeadersHealthy(e.Context(), vc.servers); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestConsulVaultExecCluster(t *testing.T) {

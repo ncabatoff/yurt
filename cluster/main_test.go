@@ -48,6 +48,7 @@ func TestMain(m *testing.M) {
 	fail(err)
 	exit = func(code int) {
 		c.Stop()
+		cancel()
 		e.Group.Wait()
 		os.Exit(code)
 	}

@@ -3,6 +3,7 @@ package cluster
 import (
 	"context"
 	"fmt"
+	"github.com/pkg/errors"
 	"time"
 
 	vaultapi "github.com/hashicorp/vault/api"
@@ -274,8 +275,12 @@ func (c *NomadClient) Wait() error {
 	return g.Wait()
 }
 
-func NewVaultCluster(ctx context.Context, e runenv.Env, ca *pki.CertificateAuthority, name string, nodeCount int, parallelStart bool, consulAddrs []string) (c *VaultCluster, err error) {
-	cluster := VaultCluster{
+// NewVaultCluster launches a vault cluster, possibly restoring a previous state
+// depending on how the env allocs nodes and the cluster name given.
+func NewVaultCluster(ctx context.Context, e runenv.Env, ca *pki.CertificateAuthority, name string, nodeCount int,
+	parallelStart bool, consulAddrs []string) (ret *VaultCluster, err error) {
+
+	cluster := &VaultCluster{
 		group:       &errgroup.Group{},
 		consulAddrs: consulAddrs,
 	}
@@ -295,74 +300,73 @@ func NewVaultCluster(ctx context.Context, e runenv.Env, ca *pki.CertificateAutho
 		cluster.joinAddrs = append(cluster.joinAddrs, joinAddr)
 	}
 
-	if !parallelStart {
+	addNode := func(i int) (*vaultapi.Client, *vaultapi.SealStatusResponse, error) {
 		var consulAddr string
-		if 0 < len(consulAddrs) {
-			consulAddr = consulAddrs[0]
+		if i < len(consulAddrs) {
+			consulAddr = consulAddrs[i]
 		}
-		err = cluster.addNode(ctx, e, nodes[0], consulAddr, ca)
+		err = cluster.addNode(ctx, e, nodes[i], consulAddr, ca)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 
-		cli, err := vault.HarnessToAPI(cluster.servers[0])
+		cli, err := vault.HarnessToAPI(cluster.servers[i])
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 
-		_, err = vault.Status(ctx, cli)
-		if err != nil {
-			return nil, err
-		}
+		status, err := vault.Status(ctx, cli)
+		return cli, status, err
+	}
 
-		cluster.rootToken, cluster.unsealKeys, err = vault.Initialize(ctx, cli, nil)
+	client, status, err := addNode(0)
+	if err != nil {
+		return nil, err
+	}
+
+	if !status.Initialized {
+		cluster.rootToken, cluster.unsealKeys, err = vault.Initialize(ctx, client, cluster.seal)
 		if err != nil {
 			return nil, err
 		}
 	}
-
-	for i, node := range nodes {
-		if i > 0 || parallelStart {
-			var consulAddr string
-			if i < len(consulAddrs) {
-				consulAddr = consulAddrs[i]
-			}
-			if err := cluster.addNode(ctx, e, node, consulAddr, ca); err != nil {
-				return nil, err
-			}
-		}
-		cli, err := vault.HarnessToAPI(cluster.servers[i])
+	if !status.Initialized || status.Sealed {
+		err = vault.Unseal(ctx, client, cluster.unsealKeys[0])
 		if err != nil {
 			return nil, err
 		}
-
-		_, err = vault.Status(ctx, cli)
-		if err != nil {
+	}
+	if !status.Initialized {
+		// Raft clusters seem to come up quicker if we wait for the first node to be healthy
+		// before bringing up the others.
+		if err := vault.LeadersHealthy(ctx, []runner.Harness{cluster.servers[0]}); err != nil {
 			return nil, err
 		}
+	}
 
-		if i == 0 && parallelStart {
-			cluster.rootToken, cluster.unsealKeys, err = vault.Initialize(ctx, cli, nil)
+	if nodeCount > 1 {
+		g, gctx := errgroup.WithContext(ctx)
+		for i := 1; i < len(nodes); i++ {
+			client, status, err = addNode(i)
 			if err != nil {
 				return nil, err
 			}
+			if status.Sealed {
+				g.Go(func() error {
+					for gctx.Err() == nil {
+						err = vault.Unseal(gctx, client, cluster.unsealKeys[0])
+						if err == nil {
+							return nil
+						}
+						time.Sleep(100 * time.Millisecond)
+					}
+					return errors.Wrap(err, gctx.Err().Error())
+				})
+			}
 		}
 
-		for ctx.Err() == nil {
-			// TODO support multiple keys
-			err = vault.Unseal(ctx, cli, cluster.unsealKeys[0])
-			if err == nil {
-				break
-			}
-			if i == 0 {
-				return nil, err
-			}
-			time.Sleep(500 * time.Millisecond)
-		}
-		if ctx.Err() != nil {
-			return nil, fmt.Errorf("timeout waiting for standby node to unseal successfully, last error: %v", err)
-		}
-		if err := vault.LeadersHealthy(ctx, []runner.Harness{cluster.servers[i]}); err != nil {
+		err = g.Wait()
+		if err != nil {
 			return nil, err
 		}
 	}
@@ -371,25 +375,38 @@ func NewVaultCluster(ctx context.Context, e runenv.Env, ca *pki.CertificateAutho
 		return nil, err
 	}
 
-	return &cluster, nil
+	cluster.nodes = nodes
+	return cluster, nil
 }
 
 type VaultCluster struct {
+	nodes       []yurt.Node
 	servers     []runner.Harness
 	group       *errgroup.Group
 	joinAddrs   []string
 	consulAddrs []string
 	rootToken   string
 	unsealKeys  []string
+	seal        *vault.Seal
 }
 
 func (c *VaultCluster) addNode(ctx context.Context, e runenv.Env, node yurt.Node, consulAddr string, ca *pki.CertificateAuthority) error {
+	h, err := c.startVault(ctx, e, node, consulAddr, ca)
+	if err != nil {
+		return err
+	}
+	c.servers = append(c.servers, h)
+	c.group.Go(h.Wait)
+	return nil
+}
+
+func (c *VaultCluster) startVault(ctx context.Context, e runenv.Env, node yurt.Node, consulAddr string, ca *pki.CertificateAuthority) (runner.Harness, error) {
 	var tls *pki.TLSConfigPEM
 	if ca != nil {
 		var err error
 		tls, err = ca.NomadServerTLS(ctx, "", "1h")
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
 	var cfg vault.VaultConfig
@@ -399,26 +416,65 @@ func (c *VaultCluster) addNode(ctx context.Context, e runenv.Env, node yurt.Node
 		cfg = vault.NewRaftConfig(c.joinAddrs, tls)
 	}
 
-	h, err := e.Run(ctx, cfg, node)
+	return e.Run(ctx, cfg, node)
+}
+
+func (c *VaultCluster) replaceNode(ctx context.Context, e runenv.Env, idx int, ca *pki.CertificateAuthority) error {
+	err := c.servers[idx].Stop()
 	if err != nil {
 		return err
 	}
-	c.servers = append(c.servers, h)
-	c.group.Go(h.Wait)
+	// Wait could return an error, but it may simply be because the old server died badly.
+	// So for now I guess we ignore it.
+	// Oh, but wait: we can't call Wait twice, and it's already being called in
+	// our group.
+	// err = c.servers[idx].Wait()
+	// if err != nil { return err }
+	// TODO add polling to make sure no one's listening anymore
+	time.Sleep(3 * time.Second)
+
+	consulAddr := ""
+	if len(c.consulAddrs) > idx {
+		consulAddr = c.consulAddrs[idx]
+	}
+	h, err := c.startVault(ctx, e, c.nodes[idx], consulAddr, ca)
+	if err != nil {
+		return err
+	}
+	c.servers[idx] = h
+
+	client, err := c.client(idx)
+	if err != nil {
+		return err
+	}
+
+	err = vault.Unseal(ctx, client, c.unsealKeys[0])
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
+func (c *VaultCluster) client(i int) (*vaultapi.Client, error) {
+	cli, err := vault.HarnessToAPI(c.servers[i])
+	if err != nil {
+		return nil, err
+	}
+	cli.SetToken(c.rootToken)
+	return cli, nil
+}
+
 func (c *VaultCluster) Clients() ([]*vaultapi.Client, error) {
-	var ret []*vaultapi.Client
-	for _, harness := range c.servers {
-		cli, err := vault.HarnessToAPI(harness)
+	var clients []*vaultapi.Client
+	for i := range c.servers {
+		client, err := c.client(i)
 		if err != nil {
 			return nil, err
 		}
-		cli.SetToken(c.rootToken)
-		ret = append(ret, cli)
+		clients = append(clients, client)
 	}
-	return ret, nil
+	return clients, nil
 }
 
 func (c *VaultCluster) Wait() error {

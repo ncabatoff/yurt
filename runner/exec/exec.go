@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
+	"time"
 
 	"github.com/ncabatoff/yurt/runner"
 	"github.com/ncabatoff/yurt/util"
@@ -93,6 +95,8 @@ func (h harness) Wait() error {
 }
 
 func (h harness) Stop() error {
+	h.cmd.Process.Signal(syscall.SIGTERM)
+	time.Sleep(time.Second)
 	h.cancel()
 	return nil
 }
