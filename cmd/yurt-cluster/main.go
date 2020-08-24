@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"github.com/ncabatoff/yurt/binaries"
 	"log"
 	"os"
 	"os/signal"
@@ -35,7 +36,7 @@ func main() {
 	var e runenv.Env
 	switch *flagMode {
 	case "exec":
-		ee, err := runenv.NewExecEnv(context.Background(), "yurt-cluster", *flagWorkDir, *flagFirstPort)
+		ee, err := runenv.NewExecEnv(context.Background(), "yurt-cluster", *flagWorkDir, *flagFirstPort, &binaries.Default)
 		if err != nil {
 			log.Print(err)
 			return

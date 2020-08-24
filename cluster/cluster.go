@@ -389,6 +389,7 @@ type VaultCluster struct {
 	rootToken   string
 	unsealKeys  []string
 	seal        *vault.Seal
+	oldSeal     *vault.Seal
 }
 
 func (c *VaultCluster) addNode(ctx context.Context, e runenv.Env, node yurt.Node, consulAddr string, ca *pki.CertificateAuthority) error {
@@ -417,6 +418,7 @@ func (c *VaultCluster) startVault(ctx context.Context, e runenv.Env, node yurt.N
 		cfg = vault.NewRaftConfig(c.joinAddrs, tls)
 	}
 	cfg.Seal = c.seal
+	cfg.OldSeal = c.oldSeal
 
 	return e.Run(ctx, cfg, node)
 }

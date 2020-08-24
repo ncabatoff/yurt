@@ -65,6 +65,7 @@ type VaultConfig struct {
 	// Only needed for Consul storage.
 	ConsulPath string
 	Seal       *Seal
+	OldSeal    *Seal
 }
 
 func (vc VaultConfig) Config() runner.Config {
@@ -220,6 +221,18 @@ seal "%s" {
   %s
 }
 `, vc.Seal.Type, strings.Join(kvals, "\n  "))
+	}
+
+	if vc.OldSeal != nil {
+		var kvals = []string{`disabled = "true"`}
+		for k, v := range vc.OldSeal.Config {
+			kvals = append(kvals, fmt.Sprintf(`%s = "%s"`, k, v))
+		}
+		config += fmt.Sprintf(`
+seal "%s" {
+  %s
+}
+`, vc.OldSeal.Type, strings.Join(kvals, "\n  "))
 	}
 
 	log.Println(config)
@@ -385,7 +398,6 @@ path "transit/decrypt/%s" {
 	if err != nil {
 		return nil, err
 	}
-	log.Println(secret.Auth.Policies)
 
 	return &Seal{
 		Type: "transit",

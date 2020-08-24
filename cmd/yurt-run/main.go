@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/ncabatoff/yurt/binaries"
 	"github.com/ncabatoff/yurt/consul"
 	"github.com/ncabatoff/yurt/nomad"
 	"io/ioutil"
@@ -129,7 +130,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	e, err := runenv.NewExecEnv(ctx, "yurt", *flagData, 16000)
+	e, err := runenv.NewExecEnv(ctx, "yurt", *flagData, 16000, &binaries.Default)
 	if err != nil {
 		log.Fatalf("error creating env: %v", err)
 	}
