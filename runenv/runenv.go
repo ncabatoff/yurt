@@ -82,12 +82,12 @@ type ExecEnv struct {
 	BaseEnv
 	firstPort *atomic.Int32
 	nodes     *atomic.Int32
-	binmgr    *binaries.Manager
+	binmgr    binaries.Manager
 }
 
 var _ Env = &ExecEnv{}
 
-func NewExecEnv(ctx context.Context, name, workDir string, firstPort int, binmgr *binaries.Manager) (*ExecEnv, error) {
+func NewExecEnv(ctx context.Context, name, workDir string, firstPort int, binmgr binaries.Manager) (*ExecEnv, error) {
 	e, err := NewBaseEnv(ctx, workDir)
 	if err != nil {
 		return nil, err
@@ -245,7 +245,7 @@ func NewExecTestEnv(t *testing.T, timeout time.Duration) (*ExecEnv, func()) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 
-	e, err := NewExecEnv(ctx, t.Name(), "", 18000, &binaries.Default)
+	e, err := NewExecEnv(ctx, t.Name(), "", 18000, binaries.Default)
 	if err != nil {
 		t.Fatal(err)
 	}

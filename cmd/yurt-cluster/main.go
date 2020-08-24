@@ -27,6 +27,7 @@ func main() {
 		flagWorkDir   = flag.String("workdir", "/tmp/yurt", "directory to store files")
 		flagVault     = flag.Bool("vault", true, "create a Vault cluster")
 		flagNomad     = flag.Bool("nomad", true, "create a Nomad cluster")
+		flagBinaries  = flag.String("binaries", "download", "either 'download' or 'path' to fetch binaries from the internet or $PATH")
 	)
 	flag.Parse()
 
@@ -36,21 +37,31 @@ func main() {
 	var e runenv.Env
 	switch *flagMode {
 	case "exec":
-		ee, err := runenv.NewExecEnv(context.Background(), "yurt-cluster", *flagWorkDir, *flagFirstPort, &binaries.Default)
+		var mgr binaries.Manager
+		switch *flagBinaries {
+		case "download":
+			mgr = binaries.Default
+		case "path":
+			mgr = &binaries.EnvPathManager{}
+		default:
+			log.Fatal("-binaries must be one of 'download' or 'path'")
+		}
+		ee, err := runenv.NewExecEnv(context.Background(), "yurt-cluster", *flagWorkDir, *flagFirstPort, mgr)
 		if err != nil {
-			log.Print(err)
-			return
+			log.Fatal(err)
 		}
 		e = ee
 	case "docker":
 		de, err := runenv.NewDockerEnv(context.Background(), "yurt-cluster", *flagWorkDir, *flagCIDR)
 		if err != nil {
-			log.Print(err)
-			return
+			log.Fatal(err)
 		}
 		e = de
 	default:
 		log.Fatalf("invalid mode %q", *flagMode)
+	}
+	if *flagBinaries != "download" && *flagMode != "exec" {
+		log.Fatal("-binaries is only used with -mode=exec")
 	}
 
 	var ca *pki.CertificateAuthority

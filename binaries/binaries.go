@@ -55,6 +55,8 @@ const prometheusURLSumTemplate = prometheusURLTemplateBase + "sha256sums.txt"
 
 var hashicorpURLHelper, prometheusURLHelper *URLHelper
 
+var Default Manager
+
 func init() {
 	u, err := NewURLHelper(hashicorpURLTemplate, hashicorpURLSumTemplate)
 	if err != nil {
@@ -67,6 +69,11 @@ func init() {
 		panic(err.Error())
 	}
 	prometheusURLHelper = u
+
+	Default, err = NewDownloadManager(filepath.Join(os.TempDir(), "yurt/binaries"))
+	if err != nil {
+		log.Fatal(err)
+	}
 }
 
 type registryEntry struct {
@@ -102,23 +109,41 @@ func registry() map[string]registryEntry {
 	}
 }
 
-type Manager struct {
+type Manager interface {
+	Get(packageName string) (string, error)
+	GetOSArch(packageName, os, arch string) (string, error)
+}
+
+type EnvPathManager struct {
+}
+
+func (e EnvPathManager) Get(packageName string) (string, error) {
+	return exec.LookPath(packageName)
+}
+
+func (e EnvPathManager) GetOSArch(packageName, os, arch string) (string, error) {
+	return "", fmt.Errorf("GetOSArch not implemented for path-based binary manager")
+}
+
+var _ Manager = &EnvPathManager{}
+
+type DownloadManager struct {
 	l       sync.Mutex
 	cache   map[string]string
 	workDir string
 }
 
-func NewManager(workDir string) (*Manager, error) {
-	m := &Manager{workDir: workDir}
+var _ Manager = &DownloadManager{}
+
+func NewDownloadManager(workDir string) (*DownloadManager, error) {
+	m := &DownloadManager{
+		workDir: workDir,
+		cache:   make(map[string]string),
+	}
 	if err := os.MkdirAll(m.workDir, 0755); err != nil {
 		return nil, err
 	}
 	return m, nil
-}
-
-var Default = Manager{
-	cache:   make(map[string]string),
-	workDir: filepath.Join(os.TempDir(), "yurt/binaries"),
 }
 
 // dldirToBinary takes as input dldir, a directory that go-getter wrote to,
@@ -149,11 +174,11 @@ func dldirToBinary(dldir, packageName string) (string, error) {
 	return "", fmt.Errorf("didn't find %s under %s", packageName, dldir)
 }
 
-func (m *Manager) Get(packageName string) (string, error) {
+func (m *DownloadManager) Get(packageName string) (string, error) {
 	return m.GetOSArch(packageName, runtime.GOOS, runtime.GOARCH)
 }
 
-func (m *Manager) GetOSArch(packageName, os, arch string) (string, error) {
+func (m *DownloadManager) GetOSArch(packageName, os, arch string) (string, error) {
 	m.l.Lock()
 	defer m.l.Unlock()
 
@@ -181,7 +206,7 @@ func (m *Manager) GetOSArch(packageName, os, arch string) (string, error) {
 // if it's not already present on disk with the correct checksum.
 // Then it extracts the archive and finds the binary with the same name as packageName.
 // Returns the absolute path (located under m.workDir) where the binary was found.
-func (m *Manager) Fetch(packageName, osName, arch string) (string, error) {
+func (m *DownloadManager) Fetch(packageName, osName, arch string) (string, error) {
 	workdir := m.workDir
 	o, ok := registry()[packageName]
 	if !ok {
@@ -283,7 +308,7 @@ func (m *Manager) Fetch(packageName, osName, arch string) (string, error) {
 // Work upwards through the directory tree starting at the current directory,
 // stopping when a directory named ".git" and a file named "go.mod" exists.
 // Intended for use in tests.
-func (m *Manager) projectRoot() (string, error) {
+func (m *DownloadManager) projectRoot() (string, error) {
 	isProjectRoot := func(dir string) (bool, error) {
 		s, err := os.Stat(filepath.Join(dir, ".git"))
 		if err != nil {
@@ -329,7 +354,7 @@ func (m *Manager) projectRoot() (string, error) {
 	return "", fmt.Errorf("no project root found (looked for .git dir and go.mod file)")
 }
 
-func (m *Manager) buildLocalBin(name, osname, arch string) (string, error) {
+func (m *DownloadManager) buildLocalBin(name, osname, arch string) (string, error) {
 	proot, err := m.projectRoot()
 	if err != nil {
 		return "", err

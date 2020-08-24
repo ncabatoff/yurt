@@ -32,7 +32,7 @@ func TestMain(m *testing.M) {
 	workdir, err := ioutil.TempDir(os.TempDir(), "yurt-cluster-test")
 	fail(err)
 
-	e, err := runenv.NewExecEnv(ctx, "yurt-cluster-TestMain", workdir, 30000, &binaries.Default)
+	e, err := runenv.NewExecEnv(ctx, "yurt-cluster-TestMain", workdir, 30000, binaries.Default)
 	fail(err)
 
 	exit = func(code int) {
