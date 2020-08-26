@@ -258,15 +258,34 @@ func apiConfigToClient(a *runner.APIConfig) (*vaultapi.Client, error) {
 }
 
 type leaderShim struct {
-	sys *vaultapi.Sys
+	client *vaultapi.Client
 }
 
+var _ runner.LeaderPeersAPI = leaderShim{}
+
 func (l leaderShim) Leader() (string, error) {
-	resp, err := l.sys.Leader()
+	resp, err := l.client.Sys().Leader()
 	if err != nil {
 		return "", err
 	}
 	return resp.LeaderAddress, nil
+}
+
+// TODO this only works for raft
+func (l leaderShim) Peers() ([]string, error) {
+	resp, err := l.client.Logical().Read("sys/storage/raft/configuration")
+	if err != nil {
+		return nil, err
+	}
+
+	var peers []string
+	serverMap := resp.Data["config"].(map[string]interface{})["servers"].(map[string]interface{})
+	for _, serverIface := range serverMap {
+		server := serverIface.(map[string]interface{})
+		addr := server["address"].(string)
+		peers = append(peers, addr)
+	}
+	return peers, nil
 }
 
 func vaultLeaderAPIs(servers []runner.Harness) ([]runner.LeaderAPI, error) {
@@ -276,7 +295,7 @@ func vaultLeaderAPIs(servers []runner.Harness) ([]runner.LeaderAPI, error) {
 		if err != nil {
 			return nil, err
 		}
-		ret = append(ret, &leaderShim{api.Sys()})
+		ret = append(ret, &leaderShim{client: api})
 	}
 	return ret, nil
 }

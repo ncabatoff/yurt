@@ -245,6 +245,7 @@ func NewExecTestEnv(t *testing.T, timeout time.Duration) (*ExecEnv, func()) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 
+	//e, err := NewExecEnv(ctx, t.Name(), "", 18000, binaries.EnvPathManager{})
 	e, err := NewExecEnv(ctx, t.Name(), "", 18000, binaries.Default)
 	if err != nil {
 		t.Fatal(err)

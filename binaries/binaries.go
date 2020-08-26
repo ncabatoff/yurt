@@ -125,7 +125,7 @@ func (e EnvPathManager) GetOSArch(packageName, os, arch string) (string, error) 
 	return "", fmt.Errorf("GetOSArch not implemented for path-based binary manager")
 }
 
-var _ Manager = &EnvPathManager{}
+var _ Manager = EnvPathManager{}
 
 type DownloadManager struct {
 	l       sync.Mutex

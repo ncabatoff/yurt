@@ -8,6 +8,7 @@ import (
 	"github.com/ncabatoff/yurt/pki"
 	"github.com/ncabatoff/yurt/runenv"
 	"io/ioutil"
+	"log"
 	"os"
 	"testing"
 )
@@ -17,7 +18,10 @@ var VaultCLI *vaultapi.Client
 
 func TestMain(m *testing.M) {
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer func() {
+		log.Println("cancelling main context")
+		cancel()
+	}()
 
 	exit := func(code int) {
 		os.Exit(code)

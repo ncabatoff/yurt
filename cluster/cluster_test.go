@@ -264,10 +264,8 @@ func TestVaultExecClusterTransitSeal(t *testing.T) {
 	e, cleanup := runenv.NewExecTestEnv(t, 30*time.Second)
 	defer cleanup()
 
-	seal, err := vault.NewSealSource(e.Ctx, VaultCLI, t.Name())
-	if err != nil {
-		t.Fatal(err)
-	}
+	seal, sealCleanup := testAutoSeal(t, e)
+	defer sealCleanup()
 
 	vc, err := NewVaultCluster(e.Context(), e, nil, t.Name(), 3, nil, seal)
 	if err != nil {
@@ -277,181 +275,108 @@ func TestVaultExecClusterTransitSeal(t *testing.T) {
 	e.Go(vc.Wait)
 }
 
+func testAutoSeal(t *testing.T, e runenv.Env) (*vault.Seal, func()) {
+	vcSeal, err := NewVaultCluster(e.Context(), e, nil, t.Name()+"-sealer", 1, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.Go(vcSeal.Wait)
+
+	vcSealClis, err := vcSeal.Clients()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	seal, err := vault.NewSealSource(e.Context(), vcSealClis[0], t.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return seal, vcSeal.Stop
+}
+
 func TestVaultExecClusterMigrateShamirToTransit(t *testing.T) {
-	e, cleanup := runenv.NewExecTestEnv(t, 60*time.Second)
+	e, cleanup := runenv.NewExecTestEnv(t, 120*time.Second)
 	defer cleanup()
 
-	vc2, err := NewVaultCluster(e.Context(), e, nil, t.Name(), 3, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer vc2.Stop()
-	e.Go(vc2.Wait)
+	seal, sealCleanup := testAutoSeal(t, e)
+	defer sealCleanup()
 
-	vc1, err := NewVaultCluster(e.Context(), e, nil, t.Name()+"-sealer", 1, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer vc1.Stop()
-	e.Go(vc1.Wait)
-
-	vclis, err := vc1.Clients()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	vc2.seal, err = vault.NewSealSource(e.Ctx, vclis[0], t.Name())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	for i := 2; i >= 0; i-- {
-		err = vc2.replaceNode(e.Context(), e, i, nil, true)
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	if err := vault.LeadersHealthy(e.Context(), vc2.servers); err != nil {
-		t.Fatal(err)
-	}
-
-	for i := 2; i >= 0; i-- {
-		err = vc2.replaceNode(e.Context(), e, i, nil, false)
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	if err := vault.LeadersHealthy(e.Context(), vc2.servers); err != nil {
-		t.Fatal(err)
-	}
+	testVaultClusterMigrateSeals(t, e, nil, seal, func() {})
 }
 
 func TestVaultExecClusterMigrateTransitToShamir(t *testing.T) {
-	e, cleanup := runenv.NewExecTestEnv(t, 60*time.Second)
+	e, cleanup := runenv.NewExecTestEnv(t, 120*time.Second)
 	defer cleanup()
 
-	vc1, err := NewVaultCluster(e.Context(), e, nil, t.Name()+"-sealer", 1, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer vc1.Stop()
-	e.Go(vc1.Wait)
+	seal, sealCleanup := testAutoSeal(t, e)
+	defer sealCleanup()
 
-	vclis, err := vc1.Clients()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	seal, err := vault.NewSealSource(e.Ctx, vclis[0], t.Name())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	vc2, err := NewVaultCluster(e.Context(), e, nil, t.Name(), 3, nil, seal)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer vc2.Stop()
-	e.Go(vc2.Wait)
-
-	vc2.oldSeal, vc2.seal = seal, nil
-
-	for i := 2; i >= 0; i-- {
-		err = vc2.replaceNode(e.Context(), e, i, nil, true)
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	if err := vault.LeadersHealthy(e.Context(), vc2.servers); err != nil {
-		t.Fatal(err)
-	}
-
-	vc1.Stop()
-	vc2.oldSeal = nil
-
-	for i := 2; i >= 0; i-- {
-		err = vc2.replaceNode(e.Context(), e, i, nil, false)
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	if err := vault.LeadersHealthy(e.Context(), vc2.servers); err != nil {
-		t.Fatal(err)
-	}
+	testVaultClusterMigrateSeals(t, e, seal, nil, sealCleanup)
 }
 
 func TestVaultExecClusterMigrateTransitToTransit(t *testing.T) {
-	e, cleanup := runenv.NewExecTestEnv(t, 60*time.Second)
+	e, cleanup := runenv.NewExecTestEnv(t, 120*time.Second)
 	defer cleanup()
 
-	vc1, err := NewVaultCluster(e.Context(), e, nil, t.Name()+"-sealer1", 1, nil, nil)
+	seal1, sealCleanup1 := testAutoSeal(t, e)
+	defer sealCleanup1()
+
+	seal2, sealCleanup2 := testAutoSeal(t, e)
+	defer sealCleanup2()
+
+	testVaultClusterMigrateSeals(t, e, seal1, seal2, sealCleanup1)
+}
+
+func testVaultClusterMigrateSeals(t *testing.T, e runenv.Env, oldSeal, newSeal *vault.Seal, postMigrate func()) {
+	vc, err := NewVaultCluster(e.Context(), e, nil, t.Name(), 3, nil, oldSeal)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer vc1.Stop()
-	e.Go(vc1.Wait)
+	defer vc.Stop()
+	e.Go(vc.Wait)
 
-	vclis, err := vc1.Clients()
+	time.Sleep(10 * time.Second)
+	vc.oldSeal, vc.seal = oldSeal, newSeal
+
+	clients, err := vc.Clients()
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	seal1, err := vault.NewSealSource(e.Ctx, vclis[0], t.Name()+"-seal1")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	vc2, err := NewVaultCluster(e.Context(), e, nil, t.Name(), 3, nil, seal1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer vc2.Stop()
-	e.Go(vc2.Wait)
-
-	vc3, err := NewVaultCluster(e.Context(), e, nil, t.Name()+"-sealer2", 1, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer vc3.Stop()
-	e.Go(vc3.Wait)
-
-	vclis, err = vc3.Clients()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	seal2, err := vault.NewSealSource(e.Ctx, vclis[0], t.Name()+"-seal2")
-	if err != nil {
-		t.Fatal(err)
-	}
-	vc2.seal, vc2.oldSeal = seal2, vc2.seal
-
 	for i := 2; i >= 0; i-- {
-		err = vc2.replaceNode(e.Context(), e, i, nil, true)
+		if i == 0 {
+			err = clients[0].Sys().StepDown()
+			if err != nil {
+				t.Fatal(err)
+			}
+			// There's no way for us to monitor what raft has applied on the
+			// node (or is there? can we look at seal config in storage using sys/raw?)
+			// so for now sleep in the hope that will ensure the former leader
+			// has the seal migration changes applied locally.
+			time.Sleep(15 * time.Second)
+			vc.oldSeal = nil
+		}
+		err = vc.replaceNode(e.Context(), e, i, nil, i != 0)
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	if err := vault.LeadersHealthy(e.Context(), vc2.servers); err != nil {
+	if err := vault.LeadersHealthy(e.Context(), vc.servers); err != nil {
 		t.Fatal(err)
 	}
 
-	vc1.Stop()
-	vc2.oldSeal = nil
+	postMigrate()
+	vc.oldSeal = nil
 
 	for i := 2; i >= 0; i-- {
-		err = vc2.replaceNode(e.Context(), e, i, nil, false)
+		err = vc.replaceNode(e.Context(), e, i, nil, false)
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	if err := vault.LeadersHealthy(e.Context(), vc2.servers); err != nil {
+	if err := vault.LeadersHealthy(e.Context(), vc.servers); err != nil {
 		t.Fatal(err)
 	}
 }

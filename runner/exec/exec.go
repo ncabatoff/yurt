@@ -66,8 +66,12 @@ func (e *ExecRunner) Start(ctx context.Context) (*harness, error) {
 
 	return &harness{
 		config: command.Config(),
-		cancel: cancel,
-		cmd:    cmd,
+		cancel: func() {
+			log.Println("cancelling exec context for", command)
+			//debug.PrintStack()
+			cancel()
+		},
+		cmd: cmd,
 	}, nil
 }
 
@@ -96,7 +100,7 @@ func (h harness) Wait() error {
 
 func (h harness) Stop() error {
 	h.cmd.Process.Signal(syscall.SIGTERM)
-	time.Sleep(time.Second)
+	time.Sleep(3 * time.Second)
 	h.cancel()
 	return nil
 }

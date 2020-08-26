@@ -52,6 +52,9 @@ func main() {
 		}
 		e = ee
 	case "docker":
+		if *flagVault {
+			log.Fatal("vault in docker not supported, need https://github.com/hashicorp/vault/pull/9109")
+		}
 		de, err := runenv.NewDockerEnv(context.Background(), "yurt-cluster", *flagWorkDir, *flagCIDR)
 		if err != nil {
 			log.Fatal(err)
