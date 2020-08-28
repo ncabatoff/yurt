@@ -98,12 +98,12 @@ func registry() map[string]registryEntry {
 		},
 		"vault": {
 			name:    "vault",
-			version: "1.5.2",
+			version: "1.5.3",
 			from:    hashicorpURLHelper,
 		},
 		"prometheus": {
 			name:    "prometheus",
-			version: "2.18.1",
+			version: "2.20.1",
 			from:    prometheusURLHelper,
 		},
 	}
@@ -111,7 +111,7 @@ func registry() map[string]registryEntry {
 
 type Manager interface {
 	Get(packageName string) (string, error)
-	GetOSArch(packageName, os, arch string) (string, error)
+	GetOSArch(packageName, os, arch, version string) (string, error)
 }
 
 type EnvPathManager struct {
@@ -121,7 +121,7 @@ func (e EnvPathManager) Get(packageName string) (string, error) {
 	return exec.LookPath(packageName)
 }
 
-func (e EnvPathManager) GetOSArch(packageName, os, arch string) (string, error) {
+func (e EnvPathManager) GetOSArch(packageName, os, arch, version string) (string, error) {
 	return "", fmt.Errorf("GetOSArch not implemented for path-based binary manager")
 }
 
@@ -175,14 +175,14 @@ func dldirToBinary(dldir, packageName string) (string, error) {
 }
 
 func (m *DownloadManager) Get(packageName string) (string, error) {
-	return m.GetOSArch(packageName, runtime.GOOS, runtime.GOARCH)
+	return m.GetOSArch(packageName, runtime.GOOS, runtime.GOARCH, "")
 }
 
-func (m *DownloadManager) GetOSArch(packageName, os, arch string) (string, error) {
+func (m *DownloadManager) GetOSArch(packageName, os, arch, version string) (string, error) {
 	m.l.Lock()
 	defer m.l.Unlock()
 
-	if binPath, ok := m.cache[packageName]; ok {
+	if binPath, ok := m.cache[packageName+":"+version]; ok {
 		return binPath, nil
 	}
 
@@ -192,13 +192,13 @@ func (m *DownloadManager) GetOSArch(packageName, os, arch string) (string, error
 	if packageName == "yurt-run" {
 		binPath, err = m.buildLocalBin(packageName, os, arch)
 	} else {
-		binPath, err = m.Fetch(packageName, os, arch)
+		binPath, err = m.Fetch(packageName, os, arch, version)
 	}
 
 	if err != nil {
 		return "", err
 	}
-	m.cache[packageName] = binPath
+	m.cache[packageName+":"+version] = binPath
 	return binPath, nil
 }
 
@@ -206,11 +206,15 @@ func (m *DownloadManager) GetOSArch(packageName, os, arch string) (string, error
 // if it's not already present on disk with the correct checksum.
 // Then it extracts the archive and finds the binary with the same name as packageName.
 // Returns the absolute path (located under m.workDir) where the binary was found.
-func (m *DownloadManager) Fetch(packageName, osName, arch string) (string, error) {
+func (m *DownloadManager) Fetch(packageName, osName, arch, version string) (string, error) {
 	workdir := m.workDir
 	o, ok := registry()[packageName]
 	if !ok {
 		return "", fmt.Errorf("unknown package name %q", packageName)
+	}
+
+	if version == "" {
+		version = o.version
 	}
 
 	var sumURL bytes.Buffer
@@ -219,7 +223,7 @@ func (m *DownloadManager) Fetch(packageName, osName, arch string) (string, error
 		Version string
 	}{
 		Package: packageName,
-		Version: o.version,
+		Version: version,
 	})
 	if err != nil {
 		return "", err
@@ -233,7 +237,7 @@ func (m *DownloadManager) Fetch(packageName, osName, arch string) (string, error
 		Arch    string
 	}{
 		Package: packageName,
-		Version: o.version,
+		Version: version,
 		OS:      osName,
 		Arch:    arch,
 	})
@@ -273,7 +277,7 @@ func (m *DownloadManager) Fetch(packageName, osName, arch string) (string, error
 	// But we could also allow go-getter to do the work of figuring out how.
 	// Unless of course the archive file is unchanged and we see an existing
 	// extract dir, in which case we do nothing.
-	packageExtract := filepath.Join(workdir, packageName, o.version)
+	packageExtract := filepath.Join(workdir, packageName, version)
 	_, err = os.Stat(localPackage)
 	_, err2 := os.Stat(packageExtract)
 	if err == nil && err2 == nil && beforeStat.ModTime().Equal(afterStat.ModTime()) {

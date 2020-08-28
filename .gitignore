@@ -3,3 +3,4 @@ download
 cmd/yurt-cluster/yurt-cluster
 cmd/yurt-run/yurt-run
 cluster/binaries
+cmd/get-binary/get-binary

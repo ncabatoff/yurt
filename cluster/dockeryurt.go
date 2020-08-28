@@ -93,7 +93,7 @@ func (y *YurtRunCluster) startNode(ctx context.Context, node int, ip string) err
 		nodeDir: "/var/yurt",
 	}
 	for _, name := range []string{"yurt-run", "consul", "nomad"} {
-		bin, err := binaries.Default.GetOSArch(name, "linux", "amd64")
+		bin, err := binaries.Default.GetOSArch(name, "linux", "amd64", "")
 		if err != nil {
 			return err
 		}
