@@ -2,6 +2,7 @@ package runenv
 
 import (
 	"context"
+	"github.com/ncabatoff/yurt/prometheus"
 	"testing"
 	"time"
 
@@ -206,4 +207,30 @@ func TestVaultExecTransitSeal(t *testing.T) {
 
 	v2, _ := runVaultServer(t, e, "", seal)
 	e.Go(v2.Wait)
+}
+
+func TestPrometheusExec(t *testing.T) {
+	e, cleanup := NewExecTestEnv(t, 60*time.Second)
+	defer cleanup()
+	promHarness := runPrometheusServer(t, e)
+	e.Go(promHarness.Wait)
+}
+
+func runPrometheusServer(t *testing.T, e Env) runner.Harness {
+	node := e.AllocNode(t.Name()+"-prometheus", prometheus.DefPorts().RunnerPorts())
+	command := prometheus.NewConfig(nil, nil)
+
+	h, err := e.Run(e.Context(), command, node)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	serverAddr, err := node.Address(prometheus.PortNames.HTTP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := prometheus.HealthCheck(e.Context(), "http://"+serverAddr); err != nil {
+		t.Fatal(err)
+	}
+	return h
 }

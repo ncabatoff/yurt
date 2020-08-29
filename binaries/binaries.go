@@ -106,6 +106,16 @@ func registry() map[string]registryEntry {
 			version: "2.20.1",
 			from:    prometheusURLHelper,
 		},
+		"consul_exporter": {
+			name:    "consul_exporter",
+			version: "0.7.1",
+			from:    prometheusURLHelper,
+		},
+		"node_exporter": {
+			name:    "node_exporter",
+			version: "1.0.1",
+			from:    prometheusURLHelper,
+		},
 	}
 }
 

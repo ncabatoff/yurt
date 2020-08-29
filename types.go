@@ -58,6 +58,7 @@ type Port struct {
 }
 
 type Ports struct {
+	Kind string
 	// ByName is a map from port name (e.g. "http", "rpc") to port.
 	ByName map[string]Port
 	// NameOrder specifies the order to assign ports sequentially

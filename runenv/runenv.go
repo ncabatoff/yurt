@@ -258,3 +258,28 @@ func NewExecTestEnv(t *testing.T, timeout time.Duration) (*ExecEnv, func()) {
 		}
 	}
 }
+
+type MonitoredEnv struct {
+	parent  Env
+	watcher func(yurt.Node)
+}
+
+var _ Env = &MonitoredEnv{}
+
+func (e MonitoredEnv) Run(ctx context.Context, cmd runner.Command, node yurt.Node) (runner.Harness, error) {
+	return e.parent.Run(ctx, cmd, node)
+}
+
+func (e MonitoredEnv) AllocNode(baseName string, ports yurt.Ports) yurt.Node {
+	node := e.parent.AllocNode(baseName, ports)
+	e.watcher(node)
+	return node
+}
+
+func (e MonitoredEnv) Context() context.Context {
+	return e.parent.Context()
+}
+
+func (e MonitoredEnv) Go(f func() error) {
+	e.parent.Go(f)
+}

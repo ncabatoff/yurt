@@ -38,6 +38,7 @@ func DefPorts() Ports {
 
 func (c Ports) RunnerPorts() yurt.Ports {
 	return yurt.Ports{
+		Kind: "nomad",
 		NameOrder: []string{
 			PortNames.HTTP,
 			PortNames.Serf,

@@ -35,6 +35,7 @@ func DefPorts() Ports {
 
 func (c Ports) RunnerPorts() yurt.Ports {
 	return yurt.Ports{
+		Kind: "vault",
 		NameOrder: []string{
 			PortNames.HTTP,
 			PortNames.Cluster,

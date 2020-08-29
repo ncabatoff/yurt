@@ -47,6 +47,7 @@ func DefPorts() Ports {
 
 func (c Ports) RunnerPorts() yurt.Ports {
 	return yurt.Ports{
+		Kind: "consul",
 		NameOrder: []string{
 			PortNames.Server,
 			PortNames.SerfLAN,
