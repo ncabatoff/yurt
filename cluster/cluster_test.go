@@ -360,10 +360,9 @@ func testVaultClusterMigrateSeals(t *testing.T, e runenv.Env, oldSeal, newSeal *
 		if err != nil {
 			t.Fatal(err)
 		}
-	}
-
-	if err := vault.LeadersHealthy(e.Context(), vc.servers); err != nil {
-		t.Fatal(err)
+		if err := vault.LeadersHealthy(e.Context(), vc.servers); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	postMigrate()
