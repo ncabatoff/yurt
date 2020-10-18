@@ -3,12 +3,13 @@ package runner
 import (
 	"context"
 	"fmt"
-	"github.com/ncabatoff/yurt"
-	"github.com/ncabatoff/yurt/pki"
 	"net/url"
 	"reflect"
 	"sort"
 	"time"
+
+	"github.com/ncabatoff/yurt"
+	"github.com/ncabatoff/yurt/pki"
 )
 
 type (

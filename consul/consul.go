@@ -3,14 +3,17 @@ package consul
 import (
 	"context"
 	"fmt"
-	"github.com/ncabatoff/yurt/pki"
-	"github.com/pkg/errors"
 	"log"
+	"net/url"
 
 	consulapi "github.com/hashicorp/consul/api"
 	"github.com/hashicorp/vault/sdk/helper/jsonutil"
 	"github.com/ncabatoff/yurt"
+	"github.com/ncabatoff/yurt/pki"
+	"github.com/ncabatoff/yurt/prometheus"
 	"github.com/ncabatoff/yurt/runner"
+	"github.com/pkg/errors"
+	"github.com/prometheus/common/model"
 )
 
 type Ports struct {
@@ -242,4 +245,47 @@ func LeadersHealthy(ctx context.Context, servers []runner.Harness, expectedPeers
 		return errors.Wrap(err, "error getting Consul Leader APIs")
 	}
 	return runner.LeaderPeerAPIsHealthy(ctx, apis, expectedPeers)
+}
+
+var ServerScrapeConfig = prometheus.ScrapeConfig{
+	JobName:     "consul-servers",
+	Params:      url.Values{"format": []string{"prometheus"}},
+	MetricsPath: "/v1/agent/metrics",
+	RelabelConfigs: []prometheus.RelabelConfig{
+		{
+			Action:       prometheus.Replace,
+			SourceLabels: model.LabelNames{model.MetricNameLabel},
+			Regex:        "consul_raft_replication_(appendEntries_rpc|appendEntries_logs|heartbeat|installSnapshot)_((\\w){36})((_sum)|(_count))?",
+			TargetLabel:  model.MetricNameLabel,
+			Replacement:  "consul_raft_replication_${1}${4}",
+		},
+		{
+			Action:       prometheus.Replace,
+			SourceLabels: model.LabelNames{model.MetricNameLabel},
+			Regex:        "consul_raft_replication_(appendEntries_rpc|appendEntries_logs|heartbeat|installSnapshot)_((\\w){36})((_sum)|(_count))?",
+			TargetLabel:  "raft_id",
+			Replacement:  "${2}",
+		},
+	},
+}
+
+var ServiceScrapeConfig = prometheus.ScrapeConfig{
+	JobName: "consul-services",
+	ConsulServiceDiscoveryConfigs: []prometheus.ConsulServiceDiscoveryConfig{
+		{
+			Server: "127.0.0.1:8500",
+		},
+	},
+	RelabelConfigs: []prometheus.RelabelConfig{
+		{
+			Action:       prometheus.Keep,
+			SourceLabels: model.LabelNames{model.MetaLabelPrefix + "consul_tags"},
+			Regex:        ".*,prom,.*",
+		},
+		{
+			Action:       prometheus.Replace,
+			SourceLabels: model.LabelNames{model.MetaLabelPrefix + "consul_service"},
+			TargetLabel:  model.JobLabel,
+		},
+	},
 }

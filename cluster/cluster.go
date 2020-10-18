@@ -3,7 +3,6 @@ package cluster
 import (
 	"context"
 	"fmt"
-	"github.com/pkg/errors"
 	"time"
 
 	vaultapi "github.com/hashicorp/vault/api"
@@ -14,6 +13,7 @@ import (
 	"github.com/ncabatoff/yurt/runenv"
 	"github.com/ncabatoff/yurt/runner"
 	"github.com/ncabatoff/yurt/vault"
+	"github.com/pkg/errors"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -34,7 +34,10 @@ func NewConsulCluster(ctx context.Context, e runenv.Env, ca *pki.CertificateAuth
 	cluster := ConsulCluster{group: &errgroup.Group{}}
 	var nodes []yurt.Node
 	for i := 0; i < nodeCount; i++ {
-		node := e.AllocNode(name+"-consul-srv", consul.DefPorts().RunnerPorts())
+		node, err := e.AllocNode(name+"-consul-srv", consul.DefPorts().RunnerPorts())
+		if err != nil {
+			return nil, err
+		}
 		joinAddr, err := node.Address(consul.PortNames.SerfLAN)
 		if err != nil {
 			return nil, err
@@ -93,7 +96,11 @@ func (c *ConsulCluster) ClientAgent(ctx context.Context, e runenv.Env, ca *pki.C
 			return nil, err
 		}
 	}
-	return e.Run(ctx, consul.NewConfig(false, c.joinAddrs, tls), e.AllocNode(name, consul.DefPorts().RunnerPorts()))
+	n, err := e.AllocNode(name, consul.DefPorts().RunnerPorts())
+	if err != nil {
+		return nil, err
+	}
+	return e.Run(ctx, consul.NewConfig(false, c.joinAddrs, tls), n)
 }
 
 func (c *ConsulCluster) Wait() error {
@@ -122,7 +129,10 @@ func NewNomadCluster(ctx context.Context, e runenv.Env, ca *pki.CertificateAutho
 	cluster := NomadCluster{group: &errgroup.Group{}}
 	var nodes []yurt.Node
 	for i := 0; i < nodeCount; i++ {
-		node := e.AllocNode(name+"-nomad-srv", nomad.DefPorts().RunnerPorts())
+		node, err := e.AllocNode(name+"-nomad-srv", nomad.DefPorts().RunnerPorts())
+		if err != nil {
+			return nil, err
+		}
 		nodes = append(nodes, node)
 		cluster.peerAddrs = append(cluster.peerAddrs,
 			fmt.Sprintf("%s:%d", node.Host, node.Ports.ByName[nomad.PortNames.RPC].Number))
@@ -197,7 +207,11 @@ func (c *NomadCluster) ClientAgent(ctx context.Context, e runenv.Env, ca *pki.Ce
 			return nil, err
 		}
 	}
-	return e.Run(ctx, nomad.NewConfig(0, consulAddr, tls), e.AllocNode(name, nomad.DefPorts().RunnerPorts()))
+	n, err := e.AllocNode(name, nomad.DefPorts().RunnerPorts())
+	if err != nil {
+		return nil, err
+	}
+	return e.Run(ctx, nomad.NewConfig(0, consulAddr, tls), n)
 }
 
 type ConsulNomadCluster struct {
@@ -293,7 +307,11 @@ func NewVaultCluster(ctx context.Context, e runenv.Env, ca *pki.CertificateAutho
 
 	nodes := make([]yurt.Node, nodeCount)
 	for i := 0; i < nodeCount; i++ {
-		nodes[i] = e.AllocNode(name+"-vault-srv", vault.DefPorts().RunnerPorts())
+		var err error
+		nodes[i], err = e.AllocNode(name+"-vault-srv", vault.DefPorts().RunnerPorts())
+		if err != nil {
+			return nil, err
+		}
 		joinAddr, err := nodes[i].Address(vault.PortNames.HTTP)
 		if err != nil {
 			return nil, err

@@ -8,7 +8,6 @@ package binaries
 import (
 	"bytes"
 	"fmt"
-	"github.com/hashicorp/go-getter"
 	"io/ioutil"
 	"log"
 	"net/url"
@@ -19,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"text/template"
+
+	"github.com/hashicorp/go-getter"
 )
 
 type URLHelper struct {
@@ -88,22 +89,22 @@ func registry() map[string]registryEntry {
 	return map[string]registryEntry{
 		"nomad": {
 			name:    "nomad",
-			version: "0.12.3",
+			version: "0.12.5",
 			from:    hashicorpURLHelper,
 		},
 		"consul": {
 			name:    "consul",
-			version: "1.8.3",
+			version: "1.8.4",
 			from:    hashicorpURLHelper,
 		},
 		"vault": {
 			name:    "vault",
-			version: "1.5.3",
+			version: "1.5.4",
 			from:    hashicorpURLHelper,
 		},
 		"prometheus": {
 			name:    "prometheus",
-			version: "2.20.1",
+			version: "2.22.0",
 			from:    prometheusURLHelper,
 		},
 		"consul_exporter": {
@@ -290,7 +291,7 @@ func (m *DownloadManager) Fetch(packageName, osName, arch, version string) (stri
 	packageExtract := filepath.Join(workdir, packageName, version)
 	_, err = os.Stat(localPackage)
 	_, err2 := os.Stat(packageExtract)
-	if err == nil && err2 == nil && beforeStat.ModTime().Equal(afterStat.ModTime()) {
+	if err == nil && err2 == nil && beforeStat != nil && beforeStat.ModTime().Equal(afterStat.ModTime()) {
 		return dldirToBinary(packageExtract, packageName)
 	}
 

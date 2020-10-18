@@ -2,6 +2,7 @@ package runenv
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"math/rand"
@@ -15,10 +16,14 @@ import (
 	"github.com/hashicorp/go-sockaddr"
 	"github.com/ncabatoff/yurt"
 	"github.com/ncabatoff/yurt/binaries"
+	"github.com/ncabatoff/yurt/consul"
 	"github.com/ncabatoff/yurt/docker"
+	"github.com/ncabatoff/yurt/nomad"
+	"github.com/ncabatoff/yurt/prometheus"
 	"github.com/ncabatoff/yurt/runner"
 	dockerrunner "github.com/ncabatoff/yurt/runner/docker"
 	"github.com/ncabatoff/yurt/runner/exec"
+	"github.com/ncabatoff/yurt/vault"
 	"go.uber.org/atomic"
 	"golang.org/x/sync/errgroup"
 )
@@ -32,7 +37,7 @@ func init() {
 type Env interface {
 	// Run starts the specified command as the requested node.
 	Run(ctx context.Context, cmd runner.Command, node yurt.Node) (runner.Harness, error)
-	AllocNode(baseName string, ports yurt.Ports) yurt.Node
+	AllocNode(baseName string, ports yurt.Ports) (yurt.Node, error)
 	Context() context.Context
 	Go(f func() error)
 }
@@ -100,14 +105,14 @@ func NewExecEnv(ctx context.Context, name, workDir string, firstPort int, binmgr
 	}, nil
 }
 
-func (e ExecEnv) AllocNode(baseName string, ports yurt.Ports) yurt.Node {
+func (e ExecEnv) AllocNode(baseName string, ports yurt.Ports) (yurt.Node, error) {
 	name := fmt.Sprintf("%s-%d", baseName, e.nodes.Add(1))
 	lastPort := e.firstPort.Add(int32(len(ports.NameOrder)))
 	return yurt.Node{
 		Name:  name,
 		Host:  "127.0.0.1",
 		Ports: ports.Sequential(int(lastPort) - len(ports.NameOrder)),
-	}
+	}, nil
 }
 
 func (e ExecEnv) Run(ctx context.Context, cmd runner.Command, node yurt.Node) (runner.Harness, error) {
@@ -143,7 +148,7 @@ type DockerEnv struct {
 	nodes     *atomic.Int32
 }
 
-func (d *DockerEnv) AllocNode(baseName string, ports yurt.Ports) yurt.Node {
+func (d *DockerEnv) AllocNode(baseName string, ports yurt.Ports) (yurt.Node, error) {
 	name := fmt.Sprintf("%s-%d", baseName, d.nodes.Add(1))
 	i4 := sockaddr.ToIPv4Addr(d.NetConf.Network).NetIP().To4()
 	i4[3] = byte(d.curIPOct.Add(1))
@@ -151,7 +156,7 @@ func (d *DockerEnv) AllocNode(baseName string, ports yurt.Ports) yurt.Node {
 		Name:  name,
 		Ports: ports.Sequential(17000),
 		Host:  i4.String(),
-	}
+	}, nil
 }
 
 func NewDockerEnv(ctx context.Context, name, workDir, cidr string) (*DockerEnv, error) {
@@ -259,21 +264,77 @@ func NewExecTestEnv(t *testing.T, timeout time.Duration) (*ExecEnv, func()) {
 	}
 }
 
+// MonitoredEnv runs a Prometheus server whose targets are configured
+// dynamically as we start them.  Prometheus is run locally as a
+// sub-process.
+// TODO make it possible to run Prometheus via any env with network
+// access to the monitored targets.
 type MonitoredEnv struct {
-	parent  Env
-	watcher func(yurt.Node)
+	exec          Env
+	parent        Env
+	promConfigDir string
+	promAddr      *runner.APIConfig
 }
 
 var _ Env = &MonitoredEnv{}
+
+func NewMonitoredEnv(parent, ex Env) (*MonitoredEnv, error) {
+	promNode, _ := ex.AllocNode("prometheus", prometheus.DefPorts().RunnerPorts())
+	//consulClientNode := ex.AllocNode("consul", consul.DefPorts().RunnerPorts())
+	// TODO trying to get the address before the client is running will be an
+	// issue in some envs.
+	//consulClientAddr, err := consulClientNode.Address(consul.PortNames.HTTP)
+	//if err != nil {
+	//	return nil, err
+	//}
+	//ssc := consul.ServiceScrapeConfig
+	//ssc.ConsulServiceDiscoveryConfigs[0].Server = consulClientAddr
+	p := prometheus.NewConfig(map[string]prometheus.ScrapeConfig{
+		"consul": consul.ServerScrapeConfig,
+		//"consul-services": ssc,
+		//"nomad-clients": nomad.ClientScrapeConfig,
+		"nomad": nomad.ServerScrapeConfig,
+		"vault": vault.ServerScrapeConfig,
+	}, nil)
+	h, err := ex.Run(parent.Context(), p, promNode)
+	ex.Go(h.Wait)
+	if err != nil {
+		return nil, err
+	}
+
+	apiConf, err := h.Endpoint(prometheus.PortNames.HTTP, true)
+	if err != nil {
+		return nil, err
+	}
+
+	return &MonitoredEnv{
+		exec:          ex,
+		parent:        parent,
+		promConfigDir: h.(*exec.Harness).Config.ConfigDir,
+		promAddr:      apiConf,
+	}, nil
+}
 
 func (e MonitoredEnv) Run(ctx context.Context, cmd runner.Command, node yurt.Node) (runner.Harness, error) {
 	return e.parent.Run(ctx, cmd, node)
 }
 
-func (e MonitoredEnv) AllocNode(baseName string, ports yurt.Ports) yurt.Node {
-	node := e.parent.AllocNode(baseName, ports)
-	e.watcher(node)
-	return node
+func (e MonitoredEnv) AllocNode(baseName string, ports yurt.Ports) (yurt.Node, error) {
+	node, _ := e.parent.AllocNode(baseName, ports)
+	addr, _ := node.Address("http")
+	localTargets := []map[string]interface{}{
+		map[string]interface{}{
+			"targets": []string{addr},
+		},
+	}
+	tbytes, _ := json.Marshal(localTargets)
+
+	dest := filepath.Join(e.promConfigDir, ports.Kind+".servers.json")
+	err := ioutil.WriteFile(dest, tbytes, 0644)
+	if err != nil {
+		return yurt.Node{}, err
+	}
+	return node, nil
 }
 
 func (e MonitoredEnv) Context() context.Context {

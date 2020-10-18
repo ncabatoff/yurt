@@ -2,33 +2,38 @@ package runenv
 
 import (
 	"context"
-	"github.com/ncabatoff/yurt/prometheus"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/ncabatoff/yurt/consul"
+	"github.com/ncabatoff/yurt/helper/testhelper"
 	"github.com/ncabatoff/yurt/nomad"
+	"github.com/ncabatoff/yurt/prometheus"
 	"github.com/ncabatoff/yurt/runner"
 	"github.com/ncabatoff/yurt/vault"
 )
 
 func TestConsulExec(t *testing.T) {
-	e, cleanup := NewExecTestEnv(t, 5*time.Second)
+	e, cleanup := NewExecTestEnv(t, 10*time.Second)
 	defer cleanup()
 
 	e.Go(runConsulServer(t, e).Wait)
 }
 
 func TestConsulExecClient(t *testing.T) {
-	e, cleanup := NewExecTestEnv(t, 5*time.Second)
+	e, cleanup := NewExecTestEnv(t, 10*time.Second)
 	defer cleanup()
 	consulHarness := runConsulServer(t, e)
 	e.Go(consulHarness.Wait)
-	runConsul(t, e, consulHarness)
+	runConsulClient(t, e, consulHarness)
 }
 
 func runConsulServer(t *testing.T, e Env) runner.Harness {
-	node := e.AllocNode(t.Name()+"-consul", consul.DefPorts().RunnerPorts())
+	node, err := e.AllocNode(t.Name()+"-consul", consul.DefPorts().RunnerPorts())
+	if err != nil {
+		t.Fatal(err)
+	}
 	joinAddr, err := node.Address(consul.PortNames.SerfLAN)
 	if err != nil {
 		t.Fatal(err)
@@ -51,7 +56,7 @@ func runConsulServer(t *testing.T, e Env) runner.Harness {
 }
 
 // Start a consul agent in client mode, joining to the provided consul server.
-func runConsul(t *testing.T, e Env, server runner.Harness) runner.Harness {
+func runConsulClient(t *testing.T, e Env, server runner.Harness) runner.Harness {
 	serfAddr, err := server.Endpoint(consul.PortNames.SerfLAN, false)
 	if err != nil {
 		t.Fatal(err)
@@ -62,8 +67,11 @@ func runConsul(t *testing.T, e Env, server runner.Harness) runner.Harness {
 	}
 	command := consul.NewConfig(false, []string{serfAddr.Address.Host}, nil)
 	expectedPeerAddrs := []string{serverAddr.Address.Host}
-
-	h, err := e.Run(e.Context(), command, e.AllocNode(t.Name()+"consul-cli", consul.DefPorts().RunnerPorts()))
+	n, err := e.AllocNode(t.Name()+"consul-cli", consul.DefPorts().RunnerPorts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := e.Run(e.Context(), command, n)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,11 +87,14 @@ func TestNomadExec(t *testing.T) {
 	defer cleanup()
 	consulHarness := runConsulServer(t, e)
 	e.Go(consulHarness.Wait)
-	e.Go(runNomad(t, e, consulHarness).Wait)
+	e.Go(runNomadServer(t, e, consulHarness).Wait)
 }
 
-func runNomad(t *testing.T, e Env, consulHarness runner.Harness) runner.Harness {
-	node := e.AllocNode(t.Name()+"-nomad", nomad.DefPorts().RunnerPorts())
+func runNomadServer(t *testing.T, e Env, consulHarness runner.Harness) runner.Harness {
+	node, err := e.AllocNode(t.Name()+"-nomad", nomad.DefPorts().RunnerPorts())
+	if err != nil {
+		t.Fatal(err)
+	}
 	consulAddr, err := consulHarness.Endpoint("http", false)
 	if err != nil {
 		t.Fatal(err)
@@ -117,14 +128,14 @@ func TestConsulDockerClient(t *testing.T) {
 	defer cleanup()
 	h := runConsulServer(t, e)
 	e.Go(h.Wait)
-	runConsul(t, e, h)
+	runConsulClient(t, e, h)
 }
 
 func TestNomadDocker(t *testing.T) {
 	e, cleanup := NewDockerTestEnv(t, 15*time.Second)
 	defer cleanup()
 	consul := runConsulServer(t, e)
-	nomad := runNomad(t, e, consul)
+	nomad := runNomadServer(t, e, consul)
 	e.Go(consul.Wait)
 	e.Go(nomad.Wait)
 }
@@ -138,7 +149,10 @@ func TestVaultExec(t *testing.T) {
 }
 
 func runVaultServer(t *testing.T, e Env, consulAddr string, seal *vault.Seal) (runner.Harness, string) {
-	node := e.AllocNode(t.Name()+"-vault", vault.DefPorts().RunnerPorts())
+	node, err := e.AllocNode(t.Name()+"-vault", vault.DefPorts().RunnerPorts())
+	if err != nil {
+		t.Fatal(err)
+	}
 	apiAddr, err := node.Address(vault.PortNames.HTTP)
 	if err != nil {
 		t.Fatal(err)
@@ -210,14 +224,17 @@ func TestVaultExecTransitSeal(t *testing.T) {
 }
 
 func TestPrometheusExec(t *testing.T) {
-	e, cleanup := NewExecTestEnv(t, 60*time.Second)
+	e, cleanup := NewExecTestEnv(t, 10*time.Second)
 	defer cleanup()
 	promHarness := runPrometheusServer(t, e)
 	e.Go(promHarness.Wait)
 }
 
 func runPrometheusServer(t *testing.T, e Env) runner.Harness {
-	node := e.AllocNode(t.Name()+"-prometheus", prometheus.DefPorts().RunnerPorts())
+	node, err := e.AllocNode(t.Name()+"-prometheus", prometheus.DefPorts().RunnerPorts())
+	if err != nil {
+		t.Fatal(err)
+	}
 	command := prometheus.NewConfig(nil, nil)
 
 	h, err := e.Run(e.Context(), command, node)
@@ -233,4 +250,103 @@ func runPrometheusServer(t *testing.T, e Env) runner.Harness {
 		t.Fatal(err)
 	}
 	return h
+}
+
+func TestMonitoredConsulExec(t *testing.T) {
+	e, cleanup := NewExecTestEnv(t, 15*time.Second)
+	defer cleanup()
+
+	m, err := NewMonitoredEnv(e, e)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m.Go(runConsulServer(t, m).Wait)
+
+	deadline := time.Now().Add(10 * time.Second)
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	testhelper.UntilPass(t, ctx, func() error {
+		return testhelper.PromQueryActiveJob(ctx, m.promAddr.Address.String(), "consul-servers")
+	})
+	testhelper.UntilPass(t, ctx, func() error {
+		s, err := testhelper.PromQueryVector(ctx, m.promAddr.Address.String(), "consul-servers", "consul_raft_apply")
+		if err != nil {
+			return err
+		}
+		if len(s) != 1 {
+			return fmt.Errorf("expected 1 sample, got %v", s)
+		}
+		if s[0] == 0 {
+			return fmt.Errorf("expected nonzero value")
+		}
+		return nil
+	})
+}
+
+func TestMonitoredVaultExec(t *testing.T) {
+	e, cleanup := NewExecTestEnv(t, 15*time.Second)
+	defer cleanup()
+
+	m, err := NewMonitoredEnv(e, e)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	h, _ := runVaultServer(t, m, "", nil)
+	m.Go(h.Wait)
+
+	deadline := time.Now().Add(10 * time.Second)
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	testhelper.UntilPass(t, ctx, func() error {
+		return testhelper.PromQueryActiveJob(ctx, m.promAddr.Address.String(), "vault-servers")
+	})
+	testhelper.UntilPass(t, ctx, func() error {
+		s, err := testhelper.PromQueryVector(ctx, m.promAddr.Address.String(), "vault-servers", "vault_raft_apply")
+		if err != nil {
+			return err
+		}
+		if len(s) != 1 {
+			return fmt.Errorf("expected 1 sample, got %v", s)
+		}
+		if s[0] == 0 {
+			return fmt.Errorf("expected nonzero value")
+		}
+		return nil
+	})
+}
+
+func TestMonitoredNomadExec(t *testing.T) {
+	e, cleanup := NewExecTestEnv(t, 30*time.Second)
+	defer cleanup()
+
+	m, err := NewMonitoredEnv(e, e)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	consulHarness := runConsulServer(t, m)
+	m.Go(consulHarness.Wait)
+	m.Go(runNomadServer(t, m, consulHarness).Wait)
+
+	deadline := time.Now().Add(15 * time.Second)
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	testhelper.UntilPass(t, ctx, func() error {
+		return testhelper.PromQueryActiveJob(ctx, m.promAddr.Address.String(), "nomad-servers")
+	})
+	testhelper.UntilPass(t, ctx, func() error {
+		s, err := testhelper.PromQueryVector(ctx, m.promAddr.Address.String(), "nomad-servers", "nomad_raft_apply")
+		if err != nil {
+			return err
+		}
+		if len(s) != 1 {
+			return fmt.Errorf("expected 1 sample, got %v", s)
+		}
+		if s[0] == 0 {
+			return fmt.Errorf("expected nonzero value")
+		}
+		return nil
+	})
 }

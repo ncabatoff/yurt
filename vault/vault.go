@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/url"
 	"strings"
 	"time"
 
 	vaultapi "github.com/hashicorp/vault/api"
 	"github.com/ncabatoff/yurt"
 	"github.com/ncabatoff/yurt/pki"
+	"github.com/ncabatoff/yurt/prometheus"
 	"github.com/ncabatoff/yurt/runner"
 )
 
@@ -429,4 +431,10 @@ path "transit/decrypt/%s" {
 			"tls_skip_verify": "true",
 		},
 	}, nil
+}
+
+var ServerScrapeConfig = prometheus.ScrapeConfig{
+	JobName:     "vault-servers",
+	Params:      url.Values{"format": []string{"prometheus"}},
+	MetricsPath: "/v1/sys/metrics",
 }

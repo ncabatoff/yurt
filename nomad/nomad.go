@@ -4,12 +4,15 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/url"
 
 	nomadapi "github.com/hashicorp/nomad/api"
 	"github.com/hashicorp/vault/sdk/helper/jsonutil"
 	"github.com/ncabatoff/yurt"
 	"github.com/ncabatoff/yurt/pki"
+	"github.com/ncabatoff/yurt/prometheus"
 	"github.com/ncabatoff/yurt/runner"
+	"github.com/prometheus/common/model"
 )
 
 type Ports struct {
@@ -252,4 +255,44 @@ func LeadersHealthy(ctx context.Context, servers []runner.Harness, expectedPeers
 		return err
 	}
 	return runner.LeaderPeerAPIsHealthy(ctx, apis, expectedPeers)
+}
+
+var ServerScrapeConfig = prometheus.ScrapeConfig{
+	JobName:     "nomad-servers",
+	Params:      url.Values{"format": []string{"prometheus"}},
+	MetricsPath: "/v1/metrics",
+	RelabelConfigs: []prometheus.RelabelConfig{
+		{
+			Action:       prometheus.Replace,
+			SourceLabels: model.LabelNames{model.MetricNameLabel},
+			Regex:        "nomad_raft_replication_(appendEntries_rpc|appendEntries_logs|heartbeat|installSnapshot)_([^:]*:\\d+)(_sum|_count)?",
+			TargetLabel:  model.MetricNameLabel,
+			Replacement:  "nomad_raft_replication_${1}${3}",
+		},
+		{
+			Action:       prometheus.Replace,
+			SourceLabels: model.LabelNames{model.MetricNameLabel},
+			Regex:        "nomad_raft_replication_(appendEntries_rpc|appendEntries_logs|heartbeat|installSnapshot)_([^:]*:\\d+)(_sum|_count)?",
+			TargetLabel:  "raft_id",
+			Replacement:  "${2}",
+		},
+	},
+}
+
+var ClientScrapeConfig = prometheus.ScrapeConfig{
+	JobName:     "nomad-clients",
+	Params:      url.Values{"format": []string{"prometheus"}},
+	MetricsPath: "/v1/metrics",
+	ConsulServiceDiscoveryConfigs: []prometheus.ConsulServiceDiscoveryConfig{
+		{
+			Server: "127.0.0.1:8500",
+		},
+	},
+	RelabelConfigs: []prometheus.RelabelConfig{
+		{
+			Action:       prometheus.Keep,
+			SourceLabels: model.LabelNames{model.MetaLabelPrefix + "consul_tags"},
+			Regex:        ".*,prom,.*",
+		},
+	},
 }

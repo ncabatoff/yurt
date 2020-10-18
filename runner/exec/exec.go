@@ -20,13 +20,13 @@ type ExecRunner struct {
 	BinPath string
 }
 
-type harness struct {
+type Harness struct {
 	cancel func()
-	config runner.Config
+	Config runner.Config
 	cmd    *exec.Cmd
 }
 
-var _ runner.Harness = &harness{}
+var _ runner.Harness = &Harness{}
 
 func NewExecRunner(binPath string, command runner.Command, config runner.Config) (*ExecRunner, error) {
 	return &ExecRunner{
@@ -37,7 +37,7 @@ func NewExecRunner(binPath string, command runner.Command, config runner.Config)
 }
 
 // Start launches the process
-func (e *ExecRunner) Start(ctx context.Context) (*harness, error) {
+func (e *ExecRunner) Start(ctx context.Context) (*Harness, error) {
 	for _, dir := range []string{e.config.DataDir, e.config.LogDir} {
 		if dir != "" {
 			if err := os.MkdirAll(dir, 0755); err != nil {
@@ -64,8 +64,8 @@ func (e *ExecRunner) Start(ctx context.Context) (*harness, error) {
 		return nil, err
 	}
 
-	return &harness{
-		config: command.Config(),
+	return &Harness{
+		Config: command.Config(),
 		cancel: func() {
 			log.Println("cancelling exec context for", command)
 			//debug.PrintStack()
@@ -75,18 +75,18 @@ func (e *ExecRunner) Start(ctx context.Context) (*harness, error) {
 	}, nil
 }
 
-func (h harness) Endpoint(name string, local bool) (*runner.APIConfig, error) {
-	port := h.config.Ports.ByName[name]
+func (h Harness) Endpoint(name string, local bool) (*runner.APIConfig, error) {
+	port := h.Config.Ports.ByName[name]
 	if port.Number == 0 {
 		return nil, fmt.Errorf("no port %q defined in config", name)
 	}
 
 	var apiConfig runner.APIConfig
-	if len(h.config.TLS.Cert) > 0 {
+	if len(h.Config.TLS.Cert) > 0 {
 		if name == "http" {
 			name = "https"
 		}
-		apiConfig.CAFile = filepath.Join(h.config.ConfigDir, "ca.pem")
+		apiConfig.CAFile = filepath.Join(h.Config.ConfigDir, "ca.pem")
 	}
 	apiConfig.Address.Scheme = name
 	apiConfig.Address.Host = fmt.Sprintf("%s:%d", "127.0.0.1", port.Number)
@@ -94,11 +94,11 @@ func (h harness) Endpoint(name string, local bool) (*runner.APIConfig, error) {
 	return &apiConfig, nil
 }
 
-func (h harness) Wait() error {
+func (h Harness) Wait() error {
 	return h.cmd.Wait()
 }
 
-func (h harness) Stop() error {
+func (h Harness) Stop() error {
 	h.cmd.Process.Signal(syscall.SIGTERM)
 	time.Sleep(3 * time.Second)
 	h.cancel()

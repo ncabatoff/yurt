@@ -408,10 +408,9 @@ func TestVaultExecClusterWithReplace(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-	}
-
-	if err := vault.LeadersHealthy(e.Context(), vc.servers); err != nil {
-		t.Fatal(err)
+		if err := vault.LeadersHealthy(e.Context(), vc.servers); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
