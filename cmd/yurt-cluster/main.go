@@ -18,38 +18,42 @@ import (
 
 func main() {
 	var (
-		flagMode      = flag.String("mode", "exec", "cluster creation mode: exec or docker")
-		flagFirstPort = flag.Int("first-port", 23000, "first port to allocate to cluster, only for mode=exec")
-		flagCIDR      = flag.String("cidr", "", "cidr to allocate to cluster, only for mode=docker")
-		flagNodes     = flag.Int("nodes", 3, "number of server nodes")
-		flagOpen      = flag.Bool("open", true, "open browser to Consul and Nomad UIs")
-		flagTLS       = flag.Bool("tls", false, "generate certs and enable TLS authentication")
-		flagWorkDir   = flag.String("workdir", "/tmp/yurt", "directory to store files")
-		flagVault     = flag.Bool("vault", true, "create a Vault cluster")
-		flagNomad     = flag.Bool("nomad", true, "create a Nomad cluster")
-		flagBinaries  = flag.String("binaries", "download", "either 'download' or 'path' to fetch binaries from the internet or $PATH")
+		flagMode       = flag.String("mode", "exec", "cluster creation mode: exec or docker")
+		flagFirstPort  = flag.Int("first-port", 23000, "first port to allocate to cluster, only for mode=exec")
+		flagCIDR       = flag.String("cidr", "", "cidr to allocate to cluster, only for mode=docker")
+		flagNodes      = flag.Int("nodes", 3, "number of server nodes")
+		flagOpen       = flag.Bool("open", true, "open browser to Consul and Nomad UIs")
+		flagTLS        = flag.Bool("tls", false, "generate certs and enable TLS authentication")
+		flagWorkDir    = flag.String("workdir", "/tmp/yurt", "directory to store files")
+		flagVault      = flag.Bool("vault", true, "create a Vault cluster")
+		flagNomad      = flag.Bool("nomad", true, "create a Nomad cluster")
+		flagPrometheus = flag.Bool("prometheus", true, "create a Prometheus server")
+		flagBinaries   = flag.String("binaries", "download", "either 'download' or 'path' to fetch binaries from the internet or $PATH")
 	)
 	flag.Parse()
 
 	if !*flagNomad && !*flagVault {
+		// We could easily support consul-only clusters, just haven't bothered yet
 		log.Fatal("must specify at least one of -vault=true and -nomad=true")
 	}
+
+	var mgr binaries.Manager
+	switch *flagBinaries {
+	case "download":
+		mgr = binaries.Default
+	case "path":
+		mgr = &binaries.EnvPathManager{}
+	default:
+		log.Fatal("-binaries must be one of 'download' or 'path'")
+	}
+	ee, err := runenv.NewExecEnv(context.Background(), "yurt-cluster", *flagWorkDir, *flagFirstPort, mgr)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	var e runenv.Env
 	switch *flagMode {
 	case "exec":
-		var mgr binaries.Manager
-		switch *flagBinaries {
-		case "download":
-			mgr = binaries.Default
-		case "path":
-			mgr = &binaries.EnvPathManager{}
-		default:
-			log.Fatal("-binaries must be one of 'download' or 'path'")
-		}
-		ee, err := runenv.NewExecEnv(context.Background(), "yurt-cluster", *flagWorkDir, *flagFirstPort, mgr)
-		if err != nil {
-			log.Fatal(err)
-		}
 		e = ee
 	case "docker":
 		if *flagVault {
@@ -68,9 +72,19 @@ func main() {
 	}
 
 	var ca *pki.CertificateAuthority
-	var err error
 	if *flagTLS {
 		ca, err = vaultCA(e)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+	if *flagPrometheus {
+		m, err := runenv.NewMonitoredEnv(e, ee)
+		if err != nil {
+			log.Fatal(err)
+		}
+		e = m
+		err = open.Start(m.PromAddr().Address.String())
 		if err != nil {
 			log.Fatal(err)
 		}

@@ -2,7 +2,6 @@ package runenv
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 
@@ -267,20 +266,7 @@ func TestMonitoredConsulExec(t *testing.T) {
 	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
 	testhelper.UntilPass(t, ctx, func() error {
-		return testhelper.PromQueryActiveJob(ctx, m.promAddr.Address.String(), "consul-servers")
-	})
-	testhelper.UntilPass(t, ctx, func() error {
-		s, err := testhelper.PromQueryVector(ctx, m.promAddr.Address.String(), "consul-servers", "consul_raft_apply")
-		if err != nil {
-			return err
-		}
-		if len(s) != 1 {
-			return fmt.Errorf("expected 1 sample, got %v", s)
-		}
-		if s[0] == 0 {
-			return fmt.Errorf("expected nonzero value")
-		}
-		return nil
+		return testhelper.PromQueryAlive(ctx, m.promAddr.Address.String(), "consul", "consul_raft_apply", 1)
 	})
 }
 
@@ -300,20 +286,7 @@ func TestMonitoredVaultExec(t *testing.T) {
 	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
 	testhelper.UntilPass(t, ctx, func() error {
-		return testhelper.PromQueryActiveJob(ctx, m.promAddr.Address.String(), "vault-servers")
-	})
-	testhelper.UntilPass(t, ctx, func() error {
-		s, err := testhelper.PromQueryVector(ctx, m.promAddr.Address.String(), "vault-servers", "vault_raft_apply")
-		if err != nil {
-			return err
-		}
-		if len(s) != 1 {
-			return fmt.Errorf("expected 1 sample, got %v", s)
-		}
-		if s[0] == 0 {
-			return fmt.Errorf("expected nonzero value")
-		}
-		return nil
+		return testhelper.PromQueryAlive(ctx, m.promAddr.Address.String(), "vault", "vault_raft_apply", 1)
 	})
 }
 
@@ -334,19 +307,9 @@ func TestMonitoredNomadExec(t *testing.T) {
 	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
 	testhelper.UntilPass(t, ctx, func() error {
-		return testhelper.PromQueryActiveJob(ctx, m.promAddr.Address.String(), "nomad-servers")
+		return testhelper.PromQueryAlive(ctx, m.promAddr.Address.String(), "consul", "consul_raft_apply", 1)
 	})
 	testhelper.UntilPass(t, ctx, func() error {
-		s, err := testhelper.PromQueryVector(ctx, m.promAddr.Address.String(), "nomad-servers", "nomad_raft_apply")
-		if err != nil {
-			return err
-		}
-		if len(s) != 1 {
-			return fmt.Errorf("expected 1 sample, got %v", s)
-		}
-		if s[0] == 0 {
-			return fmt.Errorf("expected nonzero value")
-		}
-		return nil
+		return testhelper.PromQueryAlive(ctx, m.promAddr.Address.String(), "nomad", "nomad_raft_apply", 1)
 	})
 }

@@ -29,24 +29,23 @@ func UntilPass(t *testing.T, ctx context.Context, f func() error) {
 
 }
 
-func PromQueryActiveJob(ctx context.Context, addr string, job string) error {
+func PromQueryActiveInstances(ctx context.Context, addr string, job string) ([]string, error) {
 	cli, err := promapi.NewClient(promapi.Config{Address: addr})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	api := v1.NewAPI(cli)
 	targs, err := api.Targets(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	var instances []string
 	for _, target := range targs.Active {
-		for k, v := range target.Labels {
-			if k == "job" && string(v) == job {
-				return nil
-			}
+		if string(target.Labels["job"]) == job {
+			instances = append(instances, string(target.Labels["instance"]))
 		}
 	}
-	return fmt.Errorf("did not find active target for job %q", job)
+	return instances, err
 }
 
 func PromQueryVector(ctx context.Context, addr string, job string, metric string) ([]float64, error) {
@@ -70,4 +69,23 @@ func PromQueryVector(ctx context.Context, addr string, job string, metric string
 		samples = append(samples, float64(s.Value))
 	}
 	return samples, nil
+}
+
+// PromQueryAlive makes sure that the job has count target instances and that the
+// chosen canary metric is present for all of them.
+func PromQueryAlive(ctx context.Context, addr string, job string, metric string, count int) error {
+	instances, err := PromQueryActiveInstances(ctx, addr, job)
+	if err != nil {
+		return err
+	}
+	if len(instances) != count {
+		return fmt.Errorf("expected %d instances, got %d", count, len(instances))
+	}
+
+	samples, err := PromQueryVector(ctx, addr, job, metric)
+	if len(samples) != count {
+		return fmt.Errorf("expected %d samples in vector for metric %q, got %d", count, metric, len(samples))
+	}
+
+	return nil
 }

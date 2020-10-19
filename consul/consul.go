@@ -248,7 +248,7 @@ func LeadersHealthy(ctx context.Context, servers []runner.Harness, expectedPeers
 }
 
 var ServerScrapeConfig = prometheus.ScrapeConfig{
-	JobName:     "consul-servers",
+	JobName:     "consul",
 	Params:      url.Values{"format": []string{"prometheus"}},
 	MetricsPath: "/v1/agent/metrics",
 	RelabelConfigs: []prometheus.RelabelConfig{

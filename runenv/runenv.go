@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -246,6 +247,16 @@ func NewDockerTestEnv(t *testing.T, timeout time.Duration) (*DockerEnv, func()) 
 	}
 }
 
+func NewMonitoredExecTestEnv(t *testing.T, timeout time.Duration) (*MonitoredEnv, func()) {
+	t.Helper()
+	e, cleanup := NewExecTestEnv(t, timeout)
+	m, err := NewMonitoredEnv(e, e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m, cleanup
+}
+
 func NewExecTestEnv(t *testing.T, timeout time.Duration) (*ExecEnv, func()) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -274,6 +285,12 @@ type MonitoredEnv struct {
 	parent        Env
 	promConfigDir string
 	promAddr      *runner.APIConfig
+	targetAddrs   targetAddrsByKind
+}
+
+type targetAddrsByKind struct {
+	lock  sync.Mutex
+	addrs map[string][]string
 }
 
 var _ Env = &MonitoredEnv{}
@@ -312,35 +329,56 @@ func NewMonitoredEnv(parent, ex Env) (*MonitoredEnv, error) {
 		parent:        parent,
 		promConfigDir: h.(*exec.Harness).Config.ConfigDir,
 		promAddr:      apiConf,
+		targetAddrs: targetAddrsByKind{
+			addrs: map[string][]string{},
+		},
 	}, nil
 }
 
-func (e MonitoredEnv) Run(ctx context.Context, cmd runner.Command, node yurt.Node) (runner.Harness, error) {
+func (e *MonitoredEnv) PromAddr() *runner.APIConfig {
+	return e.promAddr
+}
+
+func (e *MonitoredEnv) Run(ctx context.Context, cmd runner.Command, node yurt.Node) (runner.Harness, error) {
 	return e.parent.Run(ctx, cmd, node)
 }
 
-func (e MonitoredEnv) AllocNode(baseName string, ports yurt.Ports) (yurt.Node, error) {
+func (e *MonitoredEnv) AllocNode(baseName string, ports yurt.Ports) (yurt.Node, error) {
 	node, _ := e.parent.AllocNode(baseName, ports)
 	addr, _ := node.Address("http")
+	targets := []string{addr}
+
+	e.targetAddrs.lock.Lock()
+	defer e.targetAddrs.lock.Unlock()
+
+	for _, target := range e.targetAddrs.addrs[ports.Kind] {
+		targets = append(targets, target)
+	}
+
 	localTargets := []map[string]interface{}{
 		map[string]interface{}{
-			"targets": []string{addr},
+			"targets": targets,
 		},
 	}
-	tbytes, _ := json.Marshal(localTargets)
 
-	dest := filepath.Join(e.promConfigDir, ports.Kind+".servers.json")
-	err := ioutil.WriteFile(dest, tbytes, 0644)
+	tbytes, err := json.Marshal(localTargets)
 	if err != nil {
 		return yurt.Node{}, err
 	}
+
+	dest := filepath.Join(e.promConfigDir, ports.Kind+".servers.json")
+	err = ioutil.WriteFile(dest, tbytes, 0644)
+	if err != nil {
+		return yurt.Node{}, err
+	}
+	e.targetAddrs.addrs[ports.Kind] = targets
 	return node, nil
 }
 
-func (e MonitoredEnv) Context() context.Context {
+func (e *MonitoredEnv) Context() context.Context {
 	return e.parent.Context()
 }
 
-func (e MonitoredEnv) Go(f func() error) {
+func (e *MonitoredEnv) Go(f func() error) {
 	e.parent.Go(f)
 }

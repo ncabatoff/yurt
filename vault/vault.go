@@ -434,7 +434,7 @@ path "transit/decrypt/%s" {
 }
 
 var ServerScrapeConfig = prometheus.ScrapeConfig{
-	JobName:     "vault-servers",
+	JobName:     "vault",
 	Params:      url.Values{"format": []string{"prometheus"}},
 	MetricsPath: "/v1/sys/metrics",
 }

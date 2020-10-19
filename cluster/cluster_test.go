@@ -10,6 +10,7 @@ import (
 	nomadapi "github.com/hashicorp/nomad/api"
 	"github.com/ncabatoff/yurt/binaries"
 	"github.com/ncabatoff/yurt/consul"
+	"github.com/ncabatoff/yurt/helper/testhelper"
 	"github.com/ncabatoff/yurt/nomad"
 	"github.com/ncabatoff/yurt/pki"
 	"github.com/ncabatoff/yurt/runenv"
@@ -258,6 +259,25 @@ func TestVaultExecCluster(t *testing.T) {
 	}
 	defer vc.Stop()
 	e.Go(vc.Wait)
+}
+
+func TestVaultPrometheusExecCluster(t *testing.T) {
+	e, cleanup := runenv.NewMonitoredExecTestEnv(t, 30*time.Second)
+	defer cleanup()
+
+	vc, err := NewVaultCluster(e.Context(), e, nil, t.Name(), 3, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer vc.Stop()
+	e.Go(vc.Wait)
+
+	deadline := time.Now().Add(10 * time.Second)
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	testhelper.UntilPass(t, ctx, func() error {
+		return testhelper.PromQueryAlive(ctx, e.PromAddr().Address.String(), "vault", "vault_barrier_get_count", 3)
+	})
 }
 
 func TestVaultExecClusterTransitSeal(t *testing.T) {

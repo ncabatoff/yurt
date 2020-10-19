@@ -258,7 +258,7 @@ func LeadersHealthy(ctx context.Context, servers []runner.Harness, expectedPeers
 }
 
 var ServerScrapeConfig = prometheus.ScrapeConfig{
-	JobName:     "nomad-servers",
+	JobName:     "nomad",
 	Params:      url.Values{"format": []string{"prometheus"}},
 	MetricsPath: "/v1/metrics",
 	RelabelConfigs: []prometheus.RelabelConfig{
