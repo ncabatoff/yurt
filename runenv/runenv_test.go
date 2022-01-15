@@ -147,6 +147,14 @@ func TestVaultExec(t *testing.T) {
 	e.Go(v1.Wait)
 }
 
+func TestVaultDocker(t *testing.T) {
+	e, cleanup := NewDockerTestEnv(t, 20*time.Second)
+	defer cleanup()
+
+	v1, _ := runVaultServer(t, e, "", nil)
+	e.Go(v1.Wait)
+}
+
 func runVaultServer(t *testing.T, e Env, consulAddr string, seal *vault.Seal) (runner.Harness, string) {
 	node, err := e.AllocNode(t.Name()+"-vault", vault.DefPorts().RunnerPorts())
 	if err != nil {

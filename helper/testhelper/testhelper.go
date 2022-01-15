@@ -92,7 +92,11 @@ func PromQueryAlive(ctx context.Context, addr string, job string, metric string,
 	return nil
 }
 
-func TestNomadJobs(t *testing.T, ctx context.Context, consulCli *consulapi.Client, nomadCli *nomadapi.Client, jobhcl string) {
+// TestNomadJobs exercises a Consul/Nomad/Prometheus cluster by registering
+// jobhcl as a Nomad job.
+func TestNomadJobs(t *testing.T, ctx context.Context, consulCli *consulapi.Client,
+	nomadCli *nomadapi.Client, name, jobhcl string, tester func(ctx context.Context, addr string) error) {
+
 	job, err := nomadCli.Jobs().ParseHCL(jobhcl, true)
 	if err != nil {
 		t.Fatal(err)
@@ -118,7 +122,7 @@ func TestNomadJobs(t *testing.T, ctx context.Context, consulCli *consulapi.Clien
 			if err != nil {
 				continue
 			}
-			if s, ok := resp.Summary["prometheus"]; ok {
+			if s, ok := resp.Summary[name]; ok {
 				if s.Running > 0 {
 					continue
 				}
@@ -127,44 +131,47 @@ func TestNomadJobs(t *testing.T, ctx context.Context, consulCli *consulapi.Clien
 		}
 	}()
 
-	deadline := time.Now().Add(900 * time.Second)
-	var promaddr string
-	for time.Now().Before(deadline) {
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	var svcaddr string
+	for ctx.Err() == nil {
 		time.Sleep(100 * time.Millisecond)
-		svcs, _, err := consulCli.Catalog().Service("prometheus", "", nil)
+		svcs, _, err := consulCli.Catalog().Service(name, "", nil)
 		if err != nil {
 			t.Fatal(err, consulCli)
 		}
 		if len(svcs) != 0 {
-			t.Log(svcs[0])
 			hostip := svcs[0].ServiceTaggedAddresses["lan_ipv4"]
-			promaddr = fmt.Sprintf("http://%s:%d", hostip.Address, hostip.Port)
+			svcaddr = fmt.Sprintf("http://%s:%d", hostip.Address, hostip.Port)
 			break
 		}
 	}
-	if time.Now().After(deadline) {
-		t.Fatalf("timed out without seeing service")
-	}
+	err = ctx.Err()
 
-	for time.Now().Before(deadline) {
+	for ctx.Err() == nil {
 		time.Sleep(100 * time.Millisecond)
-		cli, err := promapi.NewClient(promapi.Config{Address: promaddr})
-		if err != nil {
-			t.Fatal(err)
-		}
-		api := v1.NewAPI(cli)
-		targs, err := api.Targets(ctx)
-		if err != nil {
-			continue
-		}
-		if len(targs.Active) > 0 {
+		err = tester(ctx, svcaddr)
+		if err == nil {
 			return
 		}
-		if len(targs.Dropped) > 0 {
-			t.Logf("dropped targets: %v", targs.Dropped)
-		}
 	}
-	t.Fatal("timed out without seeing targets")
+	t.Fatalf("timed out without satisfying tester, last err: %v", err)
+}
+
+func TestPrometheus(ctx context.Context, promaddr string) error {
+	cli, err := promapi.NewClient(promapi.Config{Address: promaddr})
+	if err != nil {
+		return err
+	}
+	api := v1.NewAPI(cli)
+	targs, err := api.Targets(ctx)
+	if err != nil {
+		return err
+	}
+	if len(targs.Active) > 0 {
+		return nil
+	}
+	return fmt.Errorf("no active targets")
 }
 
 func promDockerJobHCL(t *testing.T) string {
@@ -180,8 +187,12 @@ func ExecDockerJobHCL(t *testing.T) string {
 	return fmt.Sprintf(promJobHCL, "", "raw_exec", fmt.Sprintf(`command = "%s"`, promcmd))
 }
 
-//
-// params: extra scrape configs, driver (docker or raw_exec), config,
+// promJobHCL is a fmt template that defines a Nomad job named "prometheus"
+// which runs prometheus server on a dynamic listening port, configured to
+// scrape itself plus any other scrape config provided (first fmt param).
+// A service named "prometheus" is also defined, which will be registered in
+// Consul together with a health check to ensure the port is accepting connections..
+// fmt params: extra scrape configs, driver (docker or raw_exec), config
 var promJobHCL = `
 job "prometheus" {
   datacenters = ["dc1"]

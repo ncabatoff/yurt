@@ -184,14 +184,16 @@ storage "consul" {
 }
 
 func (vc VaultConfig) Files() map[string]string {
-	listenerAddr := fmt.Sprintf("127.0.0.1:%d", vc.Common.Ports.ByName[PortNames.HTTP].Number)
-	apiAddr := fmt.Sprintf("http://127.0.0.1:%d", vc.Common.Ports.ByName[PortNames.HTTP].Number)
-	clusterAddr := fmt.Sprintf("http://127.0.0.1:%d", vc.Common.Ports.ByName[PortNames.Cluster].Number)
+	scheme := "http"
+	networkCIDR := "127.0.0.0/8"
+	if vc.Common.NetworkConfig.Network != nil {
+		networkCIDR = vc.Common.NetworkConfig.Network.String()
+	}
+	network := fmt.Sprintf(`{{- GetAllInterfaces | include "network" "%s" | attr "address" -}}`, networkCIDR)
 	var tlsConfig string
 	files := map[string]string{}
 	if vc.Common.TLS.Cert != "" {
-		apiAddr = fmt.Sprintf("https://127.0.0.1:%d", vc.Common.Ports.ByName[PortNames.HTTP].Number)
-		clusterAddr = fmt.Sprintf("https://127.0.0.1:%d", vc.Common.Ports.ByName[PortNames.Cluster].Number)
+		scheme = "https"
 
 		files["vault.pem"] = vc.Common.TLS.Cert
 		tlsConfig += `  tls_cert_file = "vault.pem"
@@ -205,17 +207,27 @@ func (vc VaultConfig) Files() map[string]string {
 		tlsConfig += `  tls_client_ca_file = "ca.pem"
 `
 	}
+
+	listenerAddr := fmt.Sprintf("%s:%d", network, vc.Common.Ports.ByName[PortNames.HTTP].Number)
+	apiAddr := fmt.Sprintf("%s://%s", scheme, listenerAddr)
+	clusterAddr := fmt.Sprintf("https://%s:%d", network, vc.Common.Ports.ByName[PortNames.Cluster].Number)
 	config := fmt.Sprintf(`
 disable_mlock = true
 log_level = "info"
 ui = true
-api_addr = "%s"
-cluster_addr = "%s"
+api_addr = <<EOF
+%s
+EOF
+cluster_addr = <<EOF
+%s
+EOF
 listener "tcp" {
   telemetry {
 	unauthenticated_metrics_access = true
   }
-  address = "%s"
+  address = <<EOF
+%s
+EOF
   tls_disable = %v
   tls_disable_client_certs = true
 %s

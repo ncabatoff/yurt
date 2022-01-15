@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"github.com/ncabatoff/yurt/pki"
 	"testing"
 	"time"
 
@@ -11,11 +12,17 @@ import (
 	"github.com/ncabatoff/yurt/vault"
 )
 
+type TestFunc func(name string, e runenv.Env, ca pki.CertificateAuthority) error
+
+func testConsulCluster(name string, e runenv.Env, ca *pki.CertificateAuthority) error {
+	_, _, err := NewConsulClusterAndClient(name, e, ca)
+	return err
+}
+
 func TestConsulExecCluster(t *testing.T) {
 	e, cleanup := runenv.NewExecTestEnv(t, 20*time.Second)
 	defer cleanup()
-	_, _, err := NewConsulClusterAndClient(t.Name(), e, nil)
-	if err != nil {
+	if err := testConsulCluster(t.Name(), e, nil); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -23,8 +30,7 @@ func TestConsulExecCluster(t *testing.T) {
 func TestConsulDockerCluster(t *testing.T) {
 	e, cleanup := runenv.NewDockerTestEnv(t, 20*time.Second)
 	defer cleanup()
-	_, _, err := NewConsulClusterAndClient(t.Name(), e, nil)
-	if err != nil {
+	if err := testConsulCluster(t.Name(), e, nil); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -53,7 +59,8 @@ func TestNomadExecCluster(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	testhelper.TestNomadJobs(t, e.Context(), consulAPIs[0], nomadAPIs[0], testhelper.ExecDockerJobHCL(t))
+	testhelper.TestNomadJobs(t, e.Context(), consulAPIs[0], nomadAPIs[0],
+		"prometheus", testhelper.ExecDockerJobHCL(t), testhelper.TestPrometheus)
 }
 
 func TestVaultExecCluster(t *testing.T) {

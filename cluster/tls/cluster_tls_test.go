@@ -46,7 +46,8 @@ func TestNomadExecClusterTLS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	testhelper.TestNomadJobs(t, e.Context(), consulAPIs[0], nomadAPIs[0], testhelper.ExecDockerJobHCL(t))
+	testhelper.TestNomadJobs(t, e.Context(), consulAPIs[0], nomadAPIs[0],
+		"prometheus", testhelper.ExecDockerJobHCL(t), testhelper.TestPrometheus)
 }
 
 func TestVaultExecClusterTLS(t *testing.T) {
