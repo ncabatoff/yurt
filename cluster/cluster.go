@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	consulapi "github.com/hashicorp/consul/api"
+	nomadapi "github.com/hashicorp/nomad/api"
 	vaultapi "github.com/hashicorp/vault/api"
 	"github.com/ncabatoff/yurt"
 	"github.com/ncabatoff/yurt/consul"
@@ -87,6 +89,10 @@ type ConsulCluster struct {
 	tls       pki.TLSConfigPEM
 }
 
+func (c *ConsulCluster) PeerAddrs() []string {
+	return append([]string{}, c.peerAddrs...)
+}
+
 func (c *ConsulCluster) ClientAgent(ctx context.Context, e runenv.Env, ca *pki.CertificateAuthority, name string) (runner.Harness, error) {
 	var tls *pki.TLSConfigPEM
 	if ca != nil {
@@ -113,6 +119,12 @@ func (c *ConsulCluster) Stop() {
 	}
 }
 
+func (c *ConsulCluster) Kill() {
+	for _, s := range c.servers {
+		s.Kill()
+	}
+}
+
 func (c *ConsulCluster) Addrs() ([]string, error) {
 	var addrs []string
 	for _, harness := range c.servers {
@@ -123,6 +135,33 @@ func (c *ConsulCluster) Addrs() ([]string, error) {
 		addrs = append(addrs, cfg.Address)
 	}
 	return addrs, nil
+}
+
+func (c *ConsulCluster) ClientAPIs() ([]*consulapi.Client, error) {
+	var clients []*consulapi.Client
+	for _, harness := range c.servers {
+		cli, err := consul.HarnessToAPI(harness)
+		if err != nil {
+			return nil, err
+		}
+		clients = append(clients, cli)
+	}
+	return clients, nil
+}
+
+func NewConsulClusterAndClient(name string, e runenv.Env, ca *pki.CertificateAuthority) (*ConsulCluster, runner.Harness, error) {
+	cluster, err := NewConsulCluster(e.Context(), e, ca, name, 3)
+	if err != nil {
+		return nil, nil, err
+	}
+	e.Go(cluster.Wait)
+
+	client, err := cluster.ClientAgent(e.Context(), e, ca, name+"-consul-cli")
+	e.Go(client.Wait)
+	if err := consul.LeadersHealthy(e.Context(), []runner.Harness{client}, cluster.PeerAddrs()); err != nil {
+		return nil, nil, fmt.Errorf("consul cluster not healthy: %v", err)
+	}
+	return cluster, client, nil
 }
 
 func NewNomadCluster(ctx context.Context, e runenv.Env, ca *pki.CertificateAuthority, name string, nodeCount int, consulCluster *ConsulCluster) (*NomadCluster, error) {
@@ -198,6 +237,27 @@ func (c *NomadCluster) Stop() {
 	}
 }
 
+func (c *NomadCluster) Kill() {
+	for _, s := range c.servers {
+		s.Kill()
+	}
+	for _, a := range c.consulAgents {
+		a.Kill()
+	}
+}
+
+func (c *NomadCluster) ClientAPIs() ([]*nomadapi.Client, error) {
+	var clients []*nomadapi.Client
+	for _, server := range c.servers {
+		cli, err := nomad.HarnessToAPI(server)
+		if err != nil {
+			return nil, err
+		}
+		clients = append(clients, cli)
+	}
+	return clients, nil
+}
+
 func (c *NomadCluster) ClientAgent(ctx context.Context, e runenv.Env, ca *pki.CertificateAuthority, name, consulAddr string) (runner.Harness, error) {
 	var tls *pki.TLSConfigPEM
 	if ca != nil {
@@ -252,6 +312,27 @@ func (c *ConsulNomadCluster) Stop() {
 	c.Consul.Stop()
 }
 
+func (c *ConsulNomadCluster) Kill() {
+	c.Nomad.Kill()
+	c.Consul.Kill()
+}
+
+func NewConsulNomadClusterAndClient(name string, e runenv.Env, ca *pki.CertificateAuthority) (*ConsulNomadCluster, *NomadClient, error) {
+	cnc, err := NewConsulNomadCluster(e.Context(), e, ca, name, 3)
+	if err != nil {
+		return nil, nil, err
+	}
+	e.Go(cnc.Wait)
+
+	nomadClient, err := cnc.NomadClient(e, ca)
+	if err != nil {
+		return nil, nil, err
+	}
+	e.Go(nomadClient.Wait)
+
+	return cnc, nomadClient, nil
+}
+
 type NomadClient struct {
 	ConsulHarness runner.Harness
 	NomadHarness  runner.Harness
@@ -282,6 +363,11 @@ func (c *NomadClient) Stop() {
 	_ = c.ConsulHarness.Stop()
 }
 
+func (c *NomadClient) Kill() {
+	c.NomadHarness.Kill()
+	c.ConsulHarness.Kill()
+}
+
 func (c *NomadClient) Wait() error {
 	var g errgroup.Group
 	g.Go(c.NomadHarness.Wait)
@@ -290,9 +376,11 @@ func (c *NomadClient) Wait() error {
 }
 
 // NewVaultCluster launches a vault cluster, possibly restoring a previous state
-// depending on how the env allocs nodes and the cluster name given.
-func NewVaultCluster(ctx context.Context, e runenv.Env, ca *pki.CertificateAuthority, name string, nodeCount int,
-	consulAddrs []string, seal *vault.Seal) (ret *VaultCluster, err error) {
+// for the given cluster name, depending on how e creates nodes.  If consulAddrs
+// are given they will be used for
+// be running.  Otherwise, Integrated Storage (raft) will be used.
+func NewVaultCluster(ctx context.Context, e runenv.Env, ca *pki.CertificateAuthority,
+	name string, nodeCount int, consulAddrs []string, seal *vault.Seal, raftPerfMultiplier int) (ret *VaultCluster, err error) {
 
 	cluster := &VaultCluster{
 		group:       &errgroup.Group{},
@@ -324,7 +412,7 @@ func NewVaultCluster(ctx context.Context, e runenv.Env, ca *pki.CertificateAutho
 		if i < len(consulAddrs) {
 			consulAddr = consulAddrs[i]
 		}
-		err = cluster.addNode(ctx, e, nodes[i], consulAddr, ca)
+		err = cluster.addNode(ctx, e, nodes[i], consulAddr, ca, raftPerfMultiplier)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -394,6 +482,18 @@ func NewVaultCluster(ctx context.Context, e runenv.Env, ca *pki.CertificateAutho
 		return nil, err
 	}
 
+	if len(cluster.servers) > 1 && len(consulAddrs) == 0 {
+		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		if err := vault.RaftAutopilotHealthy(ctx, cluster.servers, cluster.rootToken); err != nil {
+			return nil, err
+		}
+
+		if err != nil {
+			return nil, fmt.Errorf("timed out waiting for raft autopilot health, err=%w", err)
+		}
+	}
+
 	cluster.nodes = nodes
 	return cluster, nil
 }
@@ -410,21 +510,32 @@ type VaultCluster struct {
 	oldSeal     *vault.Seal
 }
 
-func (c *VaultCluster) addNode(ctx context.Context, e runenv.Env, node yurt.Node, consulAddr string, ca *pki.CertificateAuthority) error {
-	h, err := c.startVault(ctx, e, node, consulAddr, ca)
+func (c *VaultCluster) Go(name string, f func() error) {
+	c.group.Go(func() error {
+		//log.Printf("vcjob starting %s", name)
+		err := f()
+		//log.Printf("vcjob ending %s err=%v", name, err)
+		return err
+	})
+}
+
+func (c *VaultCluster) addNode(ctx context.Context, e runenv.Env, node yurt.Node, consulAddr string, ca *pki.CertificateAuthority, raftPerfMultiplier int) error {
+	h, err := c.startVault(ctx, e, node, consulAddr, ca, raftPerfMultiplier)
 	if err != nil {
 		return err
 	}
 	c.servers = append(c.servers, h)
-	c.group.Go(h.Wait)
+	c.Go(node.Name, h.Wait)
 	return nil
 }
 
-func (c *VaultCluster) startVault(ctx context.Context, e runenv.Env, node yurt.Node, consulAddr string, ca *pki.CertificateAuthority) (runner.Harness, error) {
+func (c *VaultCluster) startVault(ctx context.Context, e runenv.Env, node yurt.Node,
+	consulAddr string, ca *pki.CertificateAuthority, raftPerfMultiplier int) (runner.Harness, error) {
+
 	var tls *pki.TLSConfigPEM
 	if ca != nil {
 		var err error
-		tls, err = ca.NomadServerTLS(ctx, "", "1h")
+		tls, err = ca.VaultServerTLS(ctx, "", "1h")
 		if err != nil {
 			return nil, err
 		}
@@ -433,7 +544,7 @@ func (c *VaultCluster) startVault(ctx context.Context, e runenv.Env, node yurt.N
 	if consulAddr != "" {
 		cfg = vault.NewConsulConfig(consulAddr, "vault", tls)
 	} else {
-		cfg = vault.NewRaftConfig(c.joinAddrs, tls)
+		cfg = vault.NewRaftConfig(c.joinAddrs, tls, raftPerfMultiplier)
 	}
 	cfg.Seal = c.seal
 	cfg.OldSeal = c.oldSeal
@@ -441,7 +552,7 @@ func (c *VaultCluster) startVault(ctx context.Context, e runenv.Env, node yurt.N
 	return e.Run(ctx, cfg, node)
 }
 
-func (c *VaultCluster) replaceNode(ctx context.Context, e runenv.Env, idx int, ca *pki.CertificateAuthority, migrate bool) error {
+func (c *VaultCluster) ReplaceNode(ctx context.Context, e runenv.Env, idx int, ca *pki.CertificateAuthority, migrate bool) error {
 	err := c.servers[idx].Stop()
 	if err != nil {
 		return err
@@ -459,7 +570,7 @@ func (c *VaultCluster) replaceNode(ctx context.Context, e runenv.Env, idx int, c
 	if len(c.consulAddrs) > idx {
 		consulAddr = c.consulAddrs[idx]
 	}
-	h, err := c.startVault(ctx, e, c.nodes[idx], consulAddr, ca)
+	h, err := c.startVault(ctx, e, c.nodes[idx], consulAddr, ca, 3)
 	if err != nil {
 		return err
 	}
@@ -470,6 +581,8 @@ func (c *VaultCluster) replaceNode(ctx context.Context, e runenv.Env, idx int, c
 		return err
 	}
 
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	for ctx.Err() == nil {
 		err = vault.Unseal(ctx, client, c.unsealKeys[0], migrate)
 		if err == nil {
@@ -508,6 +621,12 @@ func (c *VaultCluster) Wait() error {
 func (c *VaultCluster) Stop() {
 	for _, s := range c.servers {
 		_ = s.Stop()
+	}
+}
+
+func (c *VaultCluster) Kill() {
+	for _, s := range c.servers {
+		s.Kill()
 	}
 }
 
@@ -550,7 +669,7 @@ func NewConsulVaultCluster(ctx context.Context, e runenv.Env, ca *pki.Certificat
 		consulAddrs = append(consulAddrs, consulAddr.Address.Host)
 	}
 
-	cluster.Vault, err = NewVaultCluster(ctx, e, ca, name, nodeCount, consulAddrs, seal)
+	cluster.Vault, err = NewVaultCluster(ctx, e, ca, name, nodeCount, consulAddrs, seal, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -569,4 +688,82 @@ func (c *ConsulVaultCluster) Wait() error {
 func (c *ConsulVaultCluster) Stop() {
 	c.Vault.Stop()
 	c.Consul.Stop()
+}
+
+// ReplaceAllActiveLast restarts all nodes in the cluster, active node last.
+// If raft is used, wait for healthy autopilot state between each restart.
+// The active node is sent a step-down before it is restarted; this is not
+// strictly necessary but may speed things up.
+// After being restarted, nodes are unsealed with -migrate=migrateSeal.
+// The caller is responsible for setting up c.seal/c.oldSeal.
+func (c *VaultCluster) ReplaceAllActiveLast(e runenv.Env, migrateSeal bool) error {
+	clients, err := c.Clients()
+	if err != nil {
+		return err
+	}
+	leader, err := vault.Leader(c.servers)
+	leaderIdx := -1
+	for i, client := range clients {
+		if client.Address() == leader {
+			if leaderIdx != -1 {
+				return fmt.Errorf("leader found twice")
+			}
+			leaderIdx = i
+		}
+	}
+	if leaderIdx == -1 {
+		return fmt.Errorf("leader not found")
+	}
+
+	for i := 0; i < len(c.servers); i++ {
+		if i == leaderIdx {
+			continue
+		}
+		err = c.ReplaceNode(e.Context(), e, i, nil, migrateSeal)
+		if err != nil {
+			return err
+		}
+		// 10s because right now this is used only by tests which configure
+		// autopilot for 5s last-contact and server-stabilization times.
+		// If it's a consul cluster, well, it won't hurt.
+		time.Sleep(10 * time.Second)
+		if len(c.consulAddrs) == 0 {
+			err = vault.RaftAutopilotHealthy(e.Context(), c.servers, c.rootToken)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	// Is there any reason to feel confident that this node won't ever become the
+	// active node again immediately?
+	err = clients[leaderIdx].Sys().StepDown()
+	if err != nil {
+		return err
+	}
+
+	for e.Context().Err() == nil {
+		time.Sleep(time.Second)
+		leader, err = vault.Leader(c.servers)
+		if err == nil && leader != "" {
+			break
+		}
+	}
+
+	// The former leader should *not* be unsealed with migrate, because
+	// the new leader that took over when it stepped down should've already done
+	// it (and we'll get an error if we try.)
+	err = c.ReplaceNode(e.Context(), e, leaderIdx, nil, false)
+	if err != nil {
+		return err
+	}
+	time.Sleep(10 * time.Second)
+	if len(c.consulAddrs) == 0 {
+		err = vault.RaftAutopilotHealthy(e.Context(), c.servers, c.rootToken)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }

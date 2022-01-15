@@ -76,7 +76,8 @@ scrape_configs:
 - job_name: prometheus
   file_sd_configs:
   - files:
-    - prometheus:*.json
+    - prometheus.*.json
+    refresh_interval: 1s
 `
 	if d := cmp.Diff(expected, promyml); len(d) > 0 {
 		t.Fatal(d)

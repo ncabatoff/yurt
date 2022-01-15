@@ -12,13 +12,15 @@ import (
 	"strings"
 )
 
-type OutputWriter struct {
-	io.Writer
-}
+type (
+	LinePrefixer struct {
+		io.Writer
+	}
+)
 
-var _ io.Writer = (*OutputWriter)(nil)
+var _ io.Writer = (*LinePrefixer)(nil)
 
-func NewOutputWriter(prefix string, output io.Writer) *OutputWriter {
+func NewLinePrefixer(prefix string, output io.Writer) *LinePrefixer {
 	r, w := io.Pipe()
 	br := bufio.NewReader(r)
 	go func() {
@@ -32,7 +34,7 @@ func NewOutputWriter(prefix string, output io.Writer) *OutputWriter {
 			}
 		}
 	}()
-	return &OutputWriter{
+	return &LinePrefixer{
 		Writer: w,
 	}
 }

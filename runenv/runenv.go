@@ -86,9 +86,10 @@ func NewBaseEnv(ctx context.Context, workDir string) (*BaseEnv, error) {
 
 type ExecEnv struct {
 	BaseEnv
-	firstPort *atomic.Int32
-	nodes     *atomic.Int32
-	binmgr    binaries.Manager
+	firstPort  *atomic.Int32
+	nodes      *atomic.Int32
+	binmgr     binaries.Manager
+	LogToFiles bool
 }
 
 var _ Env = &ExecEnv{}
@@ -122,18 +123,24 @@ func (e ExecEnv) Run(ctx context.Context, cmd runner.Command, node yurt.Node) (r
 		return nil, err
 	}
 
+	logDir := filepath.Join(e.WorkDir, node.Name, "log")
+	logName := ""
+	if e.LogToFiles {
+		logName = filepath.Join(logDir, fmt.Sprintf("%s-stdout.txt", time.Now().Format(time.RFC3339)))
+	}
+
 	r, err := exec.NewExecRunner(binPath, cmd, runner.Config{
 		NodeName:  node.Name,
 		ConfigDir: filepath.Join(e.WorkDir, node.Name, "config"),
 		DataDir:   filepath.Join(e.WorkDir, node.Name, "data"),
-		LogDir:    filepath.Join(e.WorkDir, node.Name, "log"),
+		LogDir:    logDir,
 		Ports:     node.Ports,
 		TLS:       cmd.Config().TLS,
 	})
 	if err != nil {
 		return nil, err
 	}
-	h, err := r.Start(ctx)
+	h, err := r.Start(ctx, logName)
 	if err != nil {
 		return nil, fmt.Errorf("error starting server: %w", err)
 	}
@@ -314,10 +321,10 @@ func NewMonitoredEnv(parent, ex Env) (*MonitoredEnv, error) {
 		"vault": vault.ServerScrapeConfig,
 	}, nil)
 	h, err := ex.Run(parent.Context(), p, promNode)
-	ex.Go(h.Wait)
 	if err != nil {
 		return nil, err
 	}
+	ex.Go(h.Wait)
 
 	apiConf, err := h.Endpoint(prometheus.PortNames.HTTP, true)
 	if err != nil {

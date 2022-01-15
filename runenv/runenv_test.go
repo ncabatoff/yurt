@@ -66,7 +66,7 @@ func runConsulClient(t *testing.T, e Env, server runner.Harness) runner.Harness 
 	}
 	command := consul.NewConfig(false, []string{serfAddr.Address.Host}, nil)
 	expectedPeerAddrs := []string{serverAddr.Address.Host}
-	n, err := e.AllocNode(t.Name()+"consul-cli", consul.DefPorts().RunnerPorts())
+	n, err := e.AllocNode(t.Name()+"-consul-cli", consul.DefPorts().RunnerPorts())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,13 +117,13 @@ func runNomadServer(t *testing.T, e Env, consulHarness runner.Harness) runner.Ha
 }
 
 func TestConsulDocker(t *testing.T) {
-	e, cleanup := NewDockerTestEnv(t, 10*time.Second)
+	e, cleanup := NewDockerTestEnv(t, 15*time.Second)
 	defer cleanup()
 	e.Go(runConsulServer(t, e).Wait)
 }
 
 func TestConsulDockerClient(t *testing.T) {
-	e, cleanup := NewDockerTestEnv(t, 10*time.Second)
+	e, cleanup := NewDockerTestEnv(t, 15*time.Second)
 	defer cleanup()
 	h := runConsulServer(t, e)
 	e.Go(h.Wait)
@@ -140,7 +140,7 @@ func TestNomadDocker(t *testing.T) {
 }
 
 func TestVaultExec(t *testing.T) {
-	e, cleanup := NewExecTestEnv(t, 15*time.Second)
+	e, cleanup := NewExecTestEnv(t, 20*time.Second)
 	defer cleanup()
 
 	v1, _ := runVaultServer(t, e, "", nil)
@@ -160,7 +160,7 @@ func runVaultServer(t *testing.T, e Env, consulAddr string, seal *vault.Seal) (r
 	if consulAddr != "" {
 		vcfg = vault.NewConsulConfig(consulAddr, "vault", nil)
 	} else {
-		vcfg = vault.NewRaftConfig([]string{apiAddr}, nil)
+		vcfg = vault.NewRaftConfig([]string{apiAddr}, nil, 0)
 	}
 	vcfg.Seal = seal
 
@@ -223,7 +223,7 @@ func TestVaultExecTransitSeal(t *testing.T) {
 }
 
 func TestPrometheusExec(t *testing.T) {
-	e, cleanup := NewExecTestEnv(t, 10*time.Second)
+	e, cleanup := NewExecTestEnv(t, 15*time.Second)
 	defer cleanup()
 	promHarness := runPrometheusServer(t, e)
 	e.Go(promHarness.Wait)
@@ -262,8 +262,7 @@ func TestMonitoredConsulExec(t *testing.T) {
 
 	m.Go(runConsulServer(t, m).Wait)
 
-	deadline := time.Now().Add(10 * time.Second)
-	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	testhelper.UntilPass(t, ctx, func() error {
 		return testhelper.PromQueryAlive(ctx, m.promAddr.Address.String(), "consul", "consul_raft_apply", 1)
@@ -282,8 +281,7 @@ func TestMonitoredVaultExec(t *testing.T) {
 	h, _ := runVaultServer(t, m, "", nil)
 	m.Go(h.Wait)
 
-	deadline := time.Now().Add(10 * time.Second)
-	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	testhelper.UntilPass(t, ctx, func() error {
 		return testhelper.PromQueryAlive(ctx, m.promAddr.Address.String(), "vault", "vault_raft_apply", 1)
@@ -303,8 +301,7 @@ func TestMonitoredNomadExec(t *testing.T) {
 	m.Go(consulHarness.Wait)
 	m.Go(runNomadServer(t, m, consulHarness).Wait)
 
-	deadline := time.Now().Add(15 * time.Second)
-	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	testhelper.UntilPass(t, ctx, func() error {
 		return testhelper.PromQueryAlive(ctx, m.promAddr.Address.String(), "consul", "consul_raft_apply", 1)

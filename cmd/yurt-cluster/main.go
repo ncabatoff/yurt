@@ -91,7 +91,7 @@ func main() {
 	}
 
 	if *flagVault {
-		vc, err := cluster.NewVaultCluster(e.Context(), e, ca, "cluster1", *flagNodes, nil, nil)
+		vc, err := cluster.NewVaultCluster(e.Context(), e, ca, "cluster1", *flagNodes, nil, nil, 0)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -153,7 +153,7 @@ func main() {
 }
 
 func vaultCA(e runenv.Env) (*pki.CertificateAuthority, error) {
-	cluster, err := cluster.NewVaultCluster(e.Context(), e, nil, "yurt-vault-pki", 1, nil, nil)
+	cluster, err := cluster.NewVaultCluster(e.Context(), e, nil, "yurt-vault-pki", 1, nil, nil, 0)
 	if err != nil {
 		return nil, err
 	}

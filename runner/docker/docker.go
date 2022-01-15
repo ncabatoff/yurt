@@ -197,3 +197,7 @@ func (d *harness) Stop() error {
 	d.cancel()
 	return nil
 }
+
+func (d *harness) Kill() {
+	d.cancel()
+}

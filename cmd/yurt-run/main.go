@@ -92,7 +92,7 @@ func main() {
 	}
 
 	if netSA, err := sockaddr.NewSockAddr(yc.NetworkCIDR); err != nil {
-		log.Fatalf("bad cidr %q, err=%w", yc.NetworkCIDR, err)
+		log.Fatalf("bad cidr %q, err=%v", yc.NetworkCIDR, err)
 	} else {
 		yc.network = netSA
 	}
@@ -100,7 +100,7 @@ func main() {
 	for _, ip := range yc.ConsulServerIPs {
 		ipSA, err := sockaddr.NewSockAddr(ip)
 		if err != nil {
-			log.Fatalf("bad consul ip %q, err=%w", ip, err)
+			log.Fatalf("bad consul ip %q, err=%v", ip, err)
 		}
 		if !yc.network.Contains(ipSA) {
 			log.Fatalf("consul ip %s is not contained in network %s", ipSA, yc.network)

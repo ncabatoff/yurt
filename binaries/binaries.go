@@ -89,22 +89,22 @@ func registry() map[string]registryEntry {
 	return map[string]registryEntry{
 		"nomad": {
 			name:    "nomad",
-			version: "0.12.5",
+			version: "1.2.3",
 			from:    hashicorpURLHelper,
 		},
 		"consul": {
 			name:    "consul",
-			version: "1.8.4",
+			version: "1.11.1",
 			from:    hashicorpURLHelper,
 		},
 		"vault": {
 			name:    "vault",
-			version: "1.5.4",
+			version: "1.9.2",
 			from:    hashicorpURLHelper,
 		},
 		"prometheus": {
 			name:    "prometheus",
-			version: "2.22.0",
+			version: "2.32.1",
 			from:    prometheusURLHelper,
 		},
 		"consul_exporter": {
@@ -114,7 +114,7 @@ func registry() map[string]registryEntry {
 		},
 		"node_exporter": {
 			name:    "node_exporter",
-			version: "1.0.1",
+			version: "1.3.1",
 			from:    prometheusURLHelper,
 		},
 	}

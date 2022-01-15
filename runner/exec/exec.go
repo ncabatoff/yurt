@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -37,7 +38,7 @@ func NewExecRunner(binPath string, command runner.Command, config runner.Config)
 }
 
 // Start launches the process
-func (e *ExecRunner) Start(ctx context.Context) (*Harness, error) {
+func (e *ExecRunner) Start(ctx context.Context, logname string) (*Harness, error) {
 	for _, dir := range []string{e.config.DataDir, e.config.LogDir} {
 		if dir != "" {
 			if err := os.MkdirAll(dir, 0755); err != nil {
@@ -52,22 +53,36 @@ func (e *ExecRunner) Start(ctx context.Context) (*Harness, error) {
 		}
 	}
 
+	output := os.Stdout
+	if logname != "" {
+		var err error
+		output, err = os.Create(logname)
+		if err != nil {
+			return nil, err
+		}
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(ctx, e.BinPath, command.Args()...)
 	cmd.Env = command.Env()
 	cmd.Dir = e.config.ConfigDir
-	log.Println(cmd)
-	cmd.Stdout = util.NewOutputWriter(e.config.NodeName, os.Stdout)
-	cmd.Stderr = util.NewOutputWriter(e.config.NodeName, os.Stderr)
+	if logname != "" {
+		log.Println(cmd, ">", logname)
+	} else {
+		log.Println(cmd)
+	}
+
+	cmd.Stdout = util.NewLinePrefixer(e.config.NodeName, output)
+	cmd.Stderr = util.NewLinePrefixer(e.config.NodeName, output)
 
 	if err := cmd.Start(); err != nil {
+		cancel()
 		return nil, err
 	}
 
 	return &Harness{
 		Config: command.Config(),
 		cancel: func() {
-			log.Println("cancelling exec context for", command)
+			log.Println("cancelling exec context for", e.config.NodeName)
 			//debug.PrintStack()
 			cancel()
 		},
@@ -95,7 +110,15 @@ func (h Harness) Endpoint(name string, local bool) (*runner.APIConfig, error) {
 }
 
 func (h Harness) Wait() error {
-	return h.cmd.Wait()
+	err := h.cmd.Wait()
+	if err != nil && strings.Contains(err.Error(), "signal: killed") {
+		return nil
+	}
+	return err
+}
+
+func (h Harness) Kill() {
+	h.cancel()
 }
 
 func (h Harness) Stop() error {

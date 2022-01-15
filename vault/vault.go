@@ -1,18 +1,22 @@
 package vault
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/hashicorp/go-multierror"
 	vaultapi "github.com/hashicorp/vault/api"
 	"github.com/ncabatoff/yurt"
 	"github.com/ncabatoff/yurt/pki"
 	"github.com/ncabatoff/yurt/prometheus"
 	"github.com/ncabatoff/yurt/runner"
+	"go.uber.org/atomic"
 )
 
 type Ports struct {
@@ -54,21 +58,27 @@ type Seal struct {
 	Config map[string]string
 }
 
-// ConsulConfig describes how to run a single Consul agent.
+// VaultConfig describes how to run a single Vault node.
 type VaultConfig struct {
 	Common runner.Config
-	// JoinAddrs specifies the addresses of the Vault servers.  If they have
-	// a :port suffix, it should be that of the "http" port (i.e. the API address,
-	// 8200 by default).  Only used for Raft storage.
+	// JoinAddrs specifies the addresses of the Vault servers in the cluster.
+	// If they have a :port suffix, it should be the API address, otherwise
+	// 8200 is assumed. Only used when joining new Raft nodes to the cluster.
 	JoinAddrs []string
-	// ConsulAddr gives the host:port where to connect to Consul, normally
-	// localhost:8500.  Only needed for Consul storage or service registration.
+	// ConsulAddr gives the host:port for this node's Consul agent.
+	// Only needed for Consul storage or service registration.
 	ConsulAddr string
 	// ConsulPath gives the Consul KV prefix where Vault will store its data.
 	// Only needed for Consul storage.
 	ConsulPath string
-	Seal       *Seal
-	OldSeal    *Seal
+	// Seal is used for non-Shamir seals, i.e. AutoUnseal.
+	Seal *Seal
+	// OldSeal is used in seal migration scenarios. When migrating away from
+	// a non-Shamir seal, the old seal's config stanza must be kept in the
+	// config file, with a new disabled="true" keyval.  Once migration has
+	// completed successfully on all nodes, the old seal stanza should be removed.
+	OldSeal            *Seal
+	RaftPerfMultiplier int
 }
 
 func (vc VaultConfig) Config() runner.Config {
@@ -79,7 +89,7 @@ func (vc VaultConfig) Name() string {
 	return "vault"
 }
 
-func NewRaftConfig(joinAddrs []string, tls *pki.TLSConfigPEM) VaultConfig {
+func NewRaftConfig(joinAddrs []string, tls *pki.TLSConfigPEM, raftPerfMultiplier int) VaultConfig {
 	var t pki.TLSConfigPEM
 	if tls != nil {
 		t = *tls
@@ -90,6 +100,7 @@ func NewRaftConfig(joinAddrs []string, tls *pki.TLSConfigPEM) VaultConfig {
 			Ports: DefPorts().RunnerPorts(),
 			TLS:   t,
 		},
+		RaftPerfMultiplier: raftPerfMultiplier,
 	}
 }
 
@@ -128,22 +139,28 @@ func (vc VaultConfig) raftConfig() string {
 		scheme = "https"
 		ca = `leader_ca_cert_file = "ca.pem"`
 	}
-	for _, j := range vc.JoinAddrs {
-		retryJoin += fmt.Sprintf(`
+	if len(vc.JoinAddrs) > 1 {
+		for _, j := range vc.JoinAddrs {
+			retryJoin += fmt.Sprintf(`
   retry_join {
     leader_api_addr = "%s://%s"
     %s
   }`, scheme, j, ca)
+		}
 	}
 
+	perfMultiplier := 1
+	if vc.RaftPerfMultiplier > 0 {
+		perfMultiplier = vc.RaftPerfMultiplier
+	}
 	return fmt.Sprintf(`
 storage "raft" {
   path = "%s"
   node_id = "%s"
-  performance_multiplier = "1"
+  performance_multiplier = "%d"
   %s
 }
-`, vc.Common.DataDir, vc.Common.NodeName, retryJoin)
+`, vc.Common.DataDir, vc.Common.NodeName, perfMultiplier, retryJoin)
 }
 
 func (vc VaultConfig) consulConfig() string {
@@ -190,6 +207,7 @@ func (vc VaultConfig) Files() map[string]string {
 	}
 	config := fmt.Sprintf(`
 disable_mlock = true
+log_level = "info"
 ui = true
 api_addr = "%s"
 cluster_addr = "%s"
@@ -238,7 +256,7 @@ seal "%s" {
 `, vc.OldSeal.Type, strings.Join(kvals, "\n  "))
 	}
 
-	log.Println(config)
+	//log.Println(config)
 	files["vault.hcl"] = config
 	return files
 }
@@ -253,10 +271,14 @@ func HarnessToAPI(r runner.Harness) (*vaultapi.Client, error) {
 
 func apiConfigToClient(a *runner.APIConfig) (*vaultapi.Client, error) {
 	cfg := vaultapi.DefaultConfig()
+	cfg.MinRetryWait = 50 * time.Millisecond
 	cfg.Address = a.Address.String()
-	cfg.ConfigureTLS(&vaultapi.TLSConfig{
+	err := cfg.ConfigureTLS(&vaultapi.TLSConfig{
 		CACert: a.CAFile,
 	})
+	if err != nil {
+		return nil, err
+	}
 	return vaultapi.NewClient(cfg)
 }
 
@@ -311,6 +333,76 @@ func LeadersHealthy(ctx context.Context, servers []runner.Harness) error {
 	return runner.LeaderAPIsHealthy(ctx, apis)
 }
 
+func Leader(servers []runner.Harness) (string, error) {
+	apis, err := vaultLeaderAPIs(servers)
+	if err != nil {
+		return "", err
+	}
+	return runner.LeaderAPIsHealthyNow(apis)
+}
+
+// RaftAutopilotHealthy returns nil if any of the servers report Autopilot healthy,
+// or the errors obtained.  Autopilot health requests are always forwarded to the leader,
+// and the leader won't report a healthy cluster if any peers fail health checks.
+// Health checks are usually thresholds for replication lag and last-contact.
+func RaftAutopilotHealthy(ctx context.Context, servers []runner.Harness, token string) error {
+	return AnyVault(ctx, servers, func(client *vaultapi.Client) error {
+		client.SetToken(token)
+		state, err := client.Sys().RaftAutopilotState()
+		if err != nil {
+			return err
+		}
+		if state != nil && state.Healthy {
+			var buf bytes.Buffer
+			for name, state := range state.Servers {
+				buf.WriteString(fmt.Sprintf("%s=%#v, ", name, state.Healthy))
+			}
+			buf.Truncate(buf.Len() - 2)
+			log.Printf("got healthy apstate from %s: %s", client.Address(), buf.String())
+			return nil
+		}
+		return fmt.Errorf("unhealthy")
+	})
+}
+
+// AnyVault returns nil if f returns a non-nil result for any of the given servers.
+// Errors will be retried with a short constant delay so long as ctx.Err() returns nil.
+func AnyVault(ctx context.Context, servers []runner.Harness, f func(*vaultapi.Client) error) error {
+	errs := make([]error, len(servers))
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	var success = atomic.NewBool(false)
+	for i, server := range servers {
+		client, err := HarnessToAPI(server)
+		if err != nil {
+			// An error here indicates a broken config, and has no bearing on
+			// the health of the server.
+			return err
+		}
+		wg.Add(1)
+		go func(client *vaultapi.Client) {
+			defer wg.Done()
+			for ctx.Err() == nil {
+				errs[i] = f(client)
+				if errs[i] == nil {
+					success.Store(true)
+					return
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
+		}(client)
+	}
+	wg.Wait()
+
+	if success.Load() {
+		return nil
+	}
+	return multierror.Append(nil, errs...)
+}
+
 func Initialize(ctx context.Context, cli *vaultapi.Client, seal *Seal) (string, []string, error) {
 	req := &vaultapi.InitRequest{
 		SecretShares:    1,
@@ -339,7 +431,7 @@ func Status(ctx context.Context, cli *vaultapi.Client) (*vaultapi.SealStatusResp
 		if err == nil {
 			return sealResp, nil
 		}
-		time.Sleep(1000 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("timeout trying to check seal status, last attempt error: %v", err)
@@ -367,7 +459,7 @@ func Unseal(ctx context.Context, cli *vaultapi.Client, key string, migrate bool)
 		if resp != nil && !resp.Sealed {
 			return nil
 		}
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 	return fmt.Errorf("unseal failed, last error: %v", err)
 }

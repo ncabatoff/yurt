@@ -131,6 +131,18 @@ func createIntermediateCA(cli *vaultapi.Client, pfx string) error {
 	if err != nil {
 		return err
 	}
+
+	resp, err = cli.Logical().Write(intPath+"/roles/vault-server", map[string]interface{}{
+		"allowed_domains":  "server.dc1.vault",
+		"allow_subdomains": "true",
+		"allow_localhost":  "true",
+		"allow_any_name":   "true",
+		"allow_ip_sans":    "true",
+		"max_ttl":          "720h",
+	})
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -169,4 +181,8 @@ func (ca *CertificateAuthority) ConsulServerTLS(ctx context.Context, ip, ttl str
 
 func (ca *CertificateAuthority) NomadServerTLS(ctx context.Context, ip, ttl string) (*TLSConfigPEM, error) {
 	return ca.serverTLS(ctx, "nomad-server", "server.global.nomad", ip, ttl)
+}
+
+func (ca *CertificateAuthority) VaultServerTLS(ctx context.Context, ip, ttl string) (*TLSConfigPEM, error) {
+	return ca.serverTLS(ctx, "vault-server", "server.dc1.vault", ip, ttl)
 }

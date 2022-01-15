@@ -166,7 +166,7 @@ func Start(ctx context.Context, client *dockerapi.Client, opts RunOptions) (*typ
 		return nil, err
 	}
 	go func() {
-		err = ContainerLogs(ctx, client, inspect.ID, util.NewOutputWriter(opts.ContainerName, os.Stdout))
+		err = ContainerLogs(ctx, client, inspect.ID, util.NewLinePrefixer(opts.ContainerName, os.Stdout))
 		if err != nil {
 			log.Printf("error getting container logs for %s: %v", opts.ContainerName, err)
 		}

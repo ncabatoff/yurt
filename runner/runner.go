@@ -64,6 +64,7 @@ type (
 		// to bridge the local and execution networks.
 		Endpoint(name string, local bool) (*APIConfig, error)
 		Stop() error
+		Kill()
 		Wait() error
 	}
 
@@ -124,7 +125,7 @@ func LeaderPeerAPIsHealthy(ctx context.Context, apis []LeaderPeersAPI, expectedP
 		if err == nil {
 			return nil
 		}
-		time.Sleep(1000 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 	return err
 }
@@ -135,16 +136,16 @@ func LeaderAPIsHealthy(ctx context.Context, apis []LeaderAPI) error {
 	}
 	var err error
 	for ctx.Err() == nil {
-		err = LeaderAPIsHealthyNow(apis)
+		_, err = LeaderAPIsHealthyNow(apis)
 		if err == nil {
 			return nil
 		}
-		time.Sleep(1000 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 	return err
 }
 
-func LeaderAPIsHealthyNow(apis []LeaderAPI) error {
+func LeaderAPIsHealthyNow(apis []LeaderAPI) (string, error) {
 	var errs []error
 	var leaders = make(map[string]struct{})
 
@@ -159,8 +160,10 @@ func LeaderAPIsHealthyNow(apis []LeaderAPI) error {
 		}
 	}
 	if len(errs) == 0 && len(leaders) == 1 {
-		return nil
+		for leader := range leaders {
+			return leader, nil
+		}
 	}
 
-	return fmt.Errorf("expected no errs, 1 leader got %v, %v", errs, leaders)
+	return "", fmt.Errorf("expected no errs, 1 leader got %v, %v", errs, leaders)
 }

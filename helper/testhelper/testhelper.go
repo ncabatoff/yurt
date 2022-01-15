@@ -6,6 +6,9 @@ import (
 	"testing"
 	"time"
 
+	consulapi "github.com/hashicorp/consul/api"
+	nomadapi "github.com/hashicorp/nomad/api"
+	"github.com/ncabatoff/yurt/binaries"
 	promapi "github.com/prometheus/client_golang/api"
 	"github.com/prometheus/client_golang/api/prometheus/v1"
 	"github.com/prometheus/common/model"
@@ -26,7 +29,6 @@ func UntilPass(t *testing.T, ctx context.Context, f func() error) {
 			lastErr = err
 		}
 	}
-
 }
 
 func PromQueryActiveInstances(ctx context.Context, addr string, job string) ([]string, error) {
@@ -89,3 +91,142 @@ func PromQueryAlive(ctx context.Context, addr string, job string, metric string,
 
 	return nil
 }
+
+func TestNomadJobs(t *testing.T, ctx context.Context, consulCli *consulapi.Client, nomadCli *nomadapi.Client, jobhcl string) {
+	job, err := nomadCli.Jobs().ParseHCL(jobhcl, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	register, _, err := nomadCli.Jobs().Register(job, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if register.Warnings != "" {
+		t.Logf("register warnings: %v", register.Warnings)
+	}
+
+	defer func() {
+		_, _, err := nomadCli.Jobs().Deregister(*job.ID, false, nil)
+		if err != nil {
+			return
+		}
+
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			time.Sleep(100 * time.Millisecond)
+			resp, _, err := nomadCli.Jobs().Summary(*job.ID, nil)
+			if err != nil {
+				continue
+			}
+			if s, ok := resp.Summary["prometheus"]; ok {
+				if s.Running > 0 {
+					continue
+				}
+			}
+			return
+		}
+	}()
+
+	deadline := time.Now().Add(900 * time.Second)
+	var promaddr string
+	for time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+		svcs, _, err := consulCli.Catalog().Service("prometheus", "", nil)
+		if err != nil {
+			t.Fatal(err, consulCli)
+		}
+		if len(svcs) != 0 {
+			t.Log(svcs[0])
+			hostip := svcs[0].ServiceTaggedAddresses["lan_ipv4"]
+			promaddr = fmt.Sprintf("http://%s:%d", hostip.Address, hostip.Port)
+			break
+		}
+	}
+	if time.Now().After(deadline) {
+		t.Fatalf("timed out without seeing service")
+	}
+
+	for time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+		cli, err := promapi.NewClient(promapi.Config{Address: promaddr})
+		if err != nil {
+			t.Fatal(err)
+		}
+		api := v1.NewAPI(cli)
+		targs, err := api.Targets(ctx)
+		if err != nil {
+			continue
+		}
+		if len(targs.Active) > 0 {
+			return
+		}
+		if len(targs.Dropped) > 0 {
+			t.Logf("dropped targets: %v", targs.Dropped)
+		}
+	}
+	t.Fatal("timed out without seeing targets")
+}
+
+func promDockerJobHCL(t *testing.T) string {
+	return fmt.Sprintf(promJobHCL, "", "docker", `image = "prom/prometheus:v2.18.0"`)
+}
+
+func ExecDockerJobHCL(t *testing.T) string {
+	promcmd, err := binaries.Default.Get("prometheus")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return fmt.Sprintf(promJobHCL, "", "raw_exec", fmt.Sprintf(`command = "%s"`, promcmd))
+}
+
+//
+// params: extra scrape configs, driver (docker or raw_exec), config,
+var promJobHCL = `
+job "prometheus" {
+  datacenters = ["dc1"]
+  type = "service"
+  group "prometheus" {
+    task "prometheus" {
+      template {
+        destination = "local/prometheus.yml"
+        data = <<EOH
+global:
+  scrape_interval: "1s"
+
+scrape_configs:
+- job_name: prometheus-local
+  static_configs:
+  - targets: ['{{env "NOMAD_ADDR_http"}}']
+%s
+EOH
+      }
+      driver = "%s"
+      config {
+		%s
+        args = [
+          "--config.file=${NOMAD_TASK_DIR}/prometheus.yml",
+          "--storage.tsdb.path=${NOMAD_TASK_DIR}/data/prometheus",
+          "--web.listen-address=${NOMAD_ADDR_http}",
+        ]
+      }
+      resources {
+        network {
+          port "http" {}
+        }
+      }
+      service {
+        name = "prometheus"
+        port = "http"
+        check {
+          type = "http"
+          port = "http"
+          path = "/"
+          interval = "3s"
+          timeout = "1s"
+        }
+      }
+    }
+  }
+}
+`

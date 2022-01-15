@@ -1,16 +1,18 @@
-package cluster
+package tls
 
 import (
 	"context"
 	"fmt"
-	vaultapi "github.com/hashicorp/vault/api"
-	"github.com/ncabatoff/yurt/binaries"
-	"github.com/ncabatoff/yurt/pki"
-	"github.com/ncabatoff/yurt/runenv"
 	"io/ioutil"
 	"log"
 	"os"
 	"testing"
+
+	vaultapi "github.com/hashicorp/vault/api"
+	"github.com/ncabatoff/yurt/binaries"
+	"github.com/ncabatoff/yurt/cluster"
+	"github.com/ncabatoff/yurt/pki"
+	"github.com/ncabatoff/yurt/runenv"
 )
 
 var VaultCA *pki.CertificateAuthority
@@ -51,7 +53,7 @@ func TestMain(m *testing.M) {
 		}
 	}()
 
-	c, err := NewVaultCluster(ctx, e, nil, "testmain-vaultca", 1, nil, nil)
+	c, err := cluster.NewVaultCluster(ctx, e, nil, "testmain-vaultca", 1, nil, nil, 0)
 	fail(err)
 	exit = func(code int) {
 		c.Stop()
