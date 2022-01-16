@@ -149,6 +149,7 @@ func (e ExecEnv) Run(ctx context.Context, cmd runner.Command, node yurt.Node) (r
 
 type DockerEnv struct {
 	BaseEnv
+	BinMgr    binaries.Manager
 	DockerAPI *dockerapi.Client
 	NetConf   yurt.NetworkConfig
 	baseCIDR  net.IPNet
@@ -167,7 +168,7 @@ func (d *DockerEnv) AllocNode(baseName string, ports yurt.Ports) (yurt.Node, err
 	}, nil
 }
 
-func NewDockerEnv(ctx context.Context, name, workDir, cidr string) (*DockerEnv, error) {
+func NewDockerEnv(ctx context.Context, binMgr binaries.Manager, name, workDir, cidr string) (*DockerEnv, error) {
 	b, err := NewBaseEnv(ctx, workDir)
 	if err != nil {
 		return nil, err
@@ -194,6 +195,7 @@ func NewDockerEnv(ctx context.Context, name, workDir, cidr string) (*DockerEnv, 
 
 	return &DockerEnv{
 		BaseEnv: *b,
+		BinMgr:  binMgr,
 		NetConf: yurt.NetworkConfig{
 			DockerNetName: name,
 			Network:       sa,
@@ -205,23 +207,42 @@ func NewDockerEnv(ctx context.Context, name, workDir, cidr string) (*DockerEnv, 
 }
 
 func (d *DockerEnv) Run(ctx context.Context, cmd runner.Command, node yurt.Node) (runner.Harness, error) {
-	var image string
+	var image, cfg, data, logs string
 	switch cmd.Name() {
 	case "consul":
 		image = "consul:1.11.1"
+		cfg = "/consul/config"
+		data = "/consul/data"
+		logs = "/consul/logs"
 	case "nomad":
 		image = "noenv/nomad:0.10.3"
+		cfg = "/nomad/config"
+		data = "/nomad/data"
+		logs = "/nomad/logs"
 	case "vault":
 		image = "vault:1.9.2"
+		cfg = "/vault/config"
+		data = "/vault/file"
+		logs = "/vault/logs"
 	default:
 		return nil, fmt.Errorf("unknown config %q", cmd.Name())
 	}
-	r, err := dockerrunner.NewDockerRunner(d.DockerAPI, image, node.Host, cmd, runner.Config{
+	var binary string
+	// Use a local vault while we wait to get our fixes merged
+	if d.BinMgr != nil && cmd.Name() == "vault" {
+		var err error
+		binary, err = d.BinMgr.GetOSArch(cmd.Name(), "linux", "arm64", "")
+		if err != nil {
+			return nil, err
+		}
+	}
+	nodeDir := filepath.Join(d.WorkDir, node.Name)
+	r, err := dockerrunner.NewDockerRunner(binary, nodeDir, d.DockerAPI, image, node.Host, cmd, runner.Config{
 		NodeName:      node.Name,
 		NetworkConfig: d.NetConf,
-		ConfigDir:     filepath.Join(d.WorkDir, node.Name, "config"),
-		DataDir:       filepath.Join(d.WorkDir, node.Name, "data"),
-		LogDir:        filepath.Join(d.WorkDir, node.Name, "log"),
+		ConfigDir:     cfg,
+		DataDir:       data,
+		LogDir:        logs,
 		Ports:         node.Ports,
 		TLS:           cmd.Config().TLS,
 	})
@@ -241,7 +262,7 @@ func NewDockerTestEnv(t *testing.T, timeout time.Duration) (*DockerEnv, func()) 
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 
-	e, err := NewDockerEnv(ctx, t.Name(), "", "")
+	e, err := NewDockerEnv(ctx, binaries.Default, t.Name(), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}

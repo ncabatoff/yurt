@@ -56,19 +56,13 @@ func main() {
 	case "exec":
 		e = ee
 	case "docker":
-		if *flagVault {
-			log.Fatal("vault in docker not supported, need https://github.com/hashicorp/vault/pull/9109")
-		}
-		de, err := runenv.NewDockerEnv(context.Background(), "yurt-cluster", *flagWorkDir, *flagCIDR)
+		de, err := runenv.NewDockerEnv(context.Background(), nil, "yurt-cluster", *flagWorkDir, *flagCIDR)
 		if err != nil {
 			log.Fatal(err)
 		}
 		e = de
 	default:
 		log.Fatalf("invalid mode %q", *flagMode)
-	}
-	if *flagBinaries != "download" && *flagMode != "exec" {
-		log.Fatal("-binaries is only used with -mode=exec")
 	}
 
 	var ca *pki.CertificateAuthority

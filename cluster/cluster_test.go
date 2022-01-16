@@ -257,8 +257,7 @@ func TestConsulVaultExecCluster(t *testing.T) {
 }
 
 func TestConsulVaultDockerCluster(t *testing.T) {
-	t.Skip("need https://github.com/hashicorp/vault/pull/9109")
-	e, cleanup := runenv.NewDockerTestEnv(t, 30*time.Second)
+	e, cleanup := runenv.NewDockerTestEnv(t, 60*time.Second)
 	defer cleanup()
 
 	cluster, err := NewConsulVaultCluster(e.Context(), e, nil, t.Name(), 3, nil)
@@ -266,4 +265,15 @@ func TestConsulVaultDockerCluster(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.Go(cluster.Wait)
+}
+
+func TestVaultDockerCluster(t *testing.T) {
+	e, cleanup := runenv.NewDockerTestEnv(t, 120*time.Second)
+	defer cleanup()
+
+	vc, err := NewVaultCluster(e.Context(), e, nil, t.Name(), 3, nil, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.Go(vc.Wait)
 }

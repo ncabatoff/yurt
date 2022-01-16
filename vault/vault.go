@@ -125,7 +125,7 @@ func (vc VaultConfig) WithConfig(cfg runner.Config) runner.Command {
 }
 
 func (vc VaultConfig) Args() []string {
-	return []string{"server", "-config", vc.Common.ConfigDir}
+	return []string{"server", "-config=" + vc.Common.ConfigDir}
 }
 
 func (vc VaultConfig) Env() []string {
@@ -214,6 +214,7 @@ func (vc VaultConfig) Files() map[string]string {
 	config := fmt.Sprintf(`
 disable_mlock = true
 log_level = "info"
+log_requests_level = "trace"
 ui = true
 api_addr = <<EOF
 %s

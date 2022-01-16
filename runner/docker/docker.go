@@ -21,9 +21,11 @@ import (
 type DockerRunner struct {
 	command   runner.Command
 	config    runner.Config
+	NodeDir   string
 	Image     string
 	IP        string
 	DockerAPI *client.Client
+	binary    string
 }
 
 type harness struct {
@@ -40,7 +42,7 @@ var _ runner.Harness = &harness{}
 // is nonempty, it will be assigned as a static IP.  The command should specify
 // a docker network that already exists to be used for communication with other
 // docker-based runners.
-func NewDockerRunner(api *client.Client, image, ip string, command runner.Command, config runner.Config) (*DockerRunner, error) {
+func NewDockerRunner(binary, nodeDir string, api *client.Client, image, ip string, command runner.Command, config runner.Config) (*DockerRunner, error) {
 	if config.TLS.Cert != "" {
 		b, err := certutil.ParsePEMBundle(config.TLS.Cert)
 		if err != nil {
@@ -51,6 +53,8 @@ func NewDockerRunner(api *client.Client, image, ip string, command runner.Comman
 	return &DockerRunner{
 		DockerAPI: api,
 		config:    config,
+		NodeDir:   nodeDir,
+		binary:    binary,
 		command:   command,
 		Image:     image,
 		IP:        ip,
@@ -86,29 +90,26 @@ func (d *DockerRunner) Start(ctx context.Context) (*harness, error) {
 	}
 
 	adjConfig := d.config
-	adjConfig.ConfigDir = "/yurt/config"
-	adjConfig.DataDir = "/yurt/data"
-	adjConfig.LogDir = "/yurt/log"
+	cfgDir := filepath.Join(d.NodeDir, "config")
 	copyFromTo := map[string]string{
-		d.config.ConfigDir: adjConfig.ConfigDir,
-		d.config.DataDir:   adjConfig.DataDir,
-		d.config.LogDir:    adjConfig.LogDir,
+		cfgDir:                           adjConfig.ConfigDir,
+		filepath.Join(d.NodeDir, "data"): adjConfig.DataDir,
+		filepath.Join(d.NodeDir, "log"):  adjConfig.LogDir,
 	}
-	for from, to := range copyFromTo {
-		if from == "" {
-			continue
-		}
+	for from := range copyFromTo {
 		if err := os.MkdirAll(from, 0777); err != nil {
 			return nil, err
 		}
-		copyFromTo[from] = to
+	}
+	if d.binary != "" {
+		copyFromTo[d.binary] = filepath.Join("/bin", filepath.Base(d.binary))
 	}
 
 	command := d.command.WithConfig(adjConfig)
 	adjConfig = command.Config()
 
 	for name, contents := range command.Files() {
-		if err := util.WriteConfig(d.config.ConfigDir, name, contents); err != nil {
+		if err := util.WriteConfig(cfgDir, name, contents); err != nil {
 			return nil, err
 		}
 	}
@@ -118,32 +119,45 @@ func (d *DockerRunner) Start(ctx context.Context) (*harness, error) {
 		portset[nat.Port(p)] = struct{}{}
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	cont, err := docker.Start(ctx, d.DockerAPI, docker.RunOptions{
-		NetName: adjConfig.NetworkConfig.DockerNetName,
-		ContainerConfig: &container.Config{
-			Image: d.Image,
-			// Since we don't know what container is running and we don't want
-			// to conflict with other directories in the image, use project
-			// name as base dir.
-			Cmd: command.Args(),
-			Env: command.Env(),
-			Labels: map[string]string{
-				"yurt": "true",
-			},
-			WorkingDir:   adjConfig.ConfigDir,
-			ExposedPorts: portset,
+	args := command.Args()
+	if len(args) > 1 && args[1] == "-config=/vault/config" {
+		// Yuck.  This is because the docker-vault entrypoint insists on adding
+		// its own arg like this, and vault itself reads the same config twice,
+		// tries to bind to the same listener address twice, then fails.
+		args = append(args[:1], args[2:]...)
+	}
+	contConfig := container.Config{
+		Image: d.Image,
+		Cmd:   args,
+		Env:   command.Env(),
+		Labels: map[string]string{
+			"yurt": "true",
 		},
-		CopyFromTo:    copyFromTo,
-		ContainerName: d.config.NodeName,
-		IP:            d.IP,
+		//WorkingDir:   adjConfig.ConfigDir,
+		ExposedPorts: portset,
+		Entrypoint:   []string{"/bin/sh", "-x", "/usr/local/bin/docker-entrypoint.sh"},
+	}
+	cont, err := docker.Start(ctx, d.DockerAPI, docker.RunOptions{
+		NetName:         adjConfig.NetworkConfig.DockerNetName,
+		ContainerConfig: &contConfig,
+		CopyFromTo:      copyFromTo,
+		ContainerName:   d.config.NodeName,
+		IP:              d.IP,
 	})
-	log.Println(adjConfig, command.Args(), cont.ID, err, cont)
+	id := ""
+	if cont != nil {
+		id = cont.ID
+	}
+	log.Printf("docker.Start: id=%v err=%v args=%v config=%#v contConfig=%#v",
+		id, err, command.Args(), adjConfig, contConfig)
 	if err != nil {
+		cancel()
 		log.Println(err)
 		return nil, err
 	}
 	ip, err := docker.ContainerIP(*cont, adjConfig.NetworkConfig.DockerNetName)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	return &harness{
